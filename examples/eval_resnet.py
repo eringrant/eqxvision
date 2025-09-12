@@ -1,10 +1,251 @@
 import torch
 import jax
+import jax.numpy as jnp
+import jax.random as jrandom
+import equinox as eqx
+import jax.tree_util as jtu
 from eqxvision.models.classification.resnet import resnet50
 from eqxvision.utils import CLASSIFICATION_URLS
+from datasets import load_dataset
+from torchvision.transforms.v2 import Compose, Resize, CenterCrop, ToImage, ToDtype, Normalize
+import torch
+import numpy as np
+from PIL import Image
+from tqdm import tqdm
+from typing import Dict, Tuple
 
-model = resnet50(torch_weights=CLASSIFICATION_URLS["resnet50"])
+from jax import config
+config.update("jax_default_matmul_precision", "highest")  # disables TF32 usage
 
-print("✅ ResNet-50 model loaded successfully with PyTorch weights!")
-print(f"Model type: {type(model)}")
-print("Ready for inference!")
+class StatelessBatchNorm(eqx.Module):
+    """A stateless BatchNorm for inference only - uses fixed mean, var, weight, bias."""
+    
+    weight: jnp.ndarray
+    bias: jnp.ndarray  
+    running_mean: jnp.ndarray
+    running_var: jnp.ndarray
+    eps: float
+    
+    def __init__(self, bn_layer: eqx.nn.BatchNorm):
+        # Extract the parameters from the original BatchNorm
+        self.weight = bn_layer.weight if bn_layer.weight is not None else jnp.ones(bn_layer.input_size)
+        self.bias = bn_layer.bias if bn_layer.bias is not None else jnp.zeros(bn_layer.input_size)
+        
+        # Extract running statistics from the ema_state_index
+        if hasattr(bn_layer, 'ema_state_index') and bn_layer.ema_state_index is not None:
+            self.running_mean, self.running_var = bn_layer.ema_state_index.init
+        else:
+            # Fallback values if no running stats available
+            self.running_mean = jnp.zeros(bn_layer.input_size)
+            self.running_var = jnp.ones(bn_layer.input_size)
+            
+        self.eps = bn_layer.eps
+        print(f"StatelessBatchNorm initialized with eps: {self.eps}")
+
+    def __call__(self, x, *, key=None):
+        # Standard BatchNorm formula: (x - mean) / sqrt(var + eps) * weight + bias
+        # Input x has shape (C, H, W), normalize along channel dimension
+        normalized = (x - self.running_mean.reshape(-1, 1, 1)) / jnp.sqrt(self.running_var.reshape(-1, 1, 1) + self.eps)
+        return normalized * self.weight.reshape(-1, 1, 1) + self.bias.reshape(-1, 1, 1)
+
+
+def replace_batchnorm_with_stateless(model):
+    """Recursively replace all BatchNorm layers with StatelessBatchNorm."""
+    
+    def replace_single_batchnorm(module):
+        if isinstance(module, eqx.nn.BatchNorm):
+            return StatelessBatchNorm(module)
+        return module
+    
+    return jtu.tree_map(replace_single_batchnorm, model, is_leaf=lambda x: isinstance(x, eqx.nn.BatchNorm))
+
+def create_batch_preprocessing_pipeline():
+    """Create ImageNet preprocessing pipeline for batch processing."""
+    return Compose([
+        CenterCrop(224),  # Works on batched tensors: (B, C, H, W)
+        Normalize(
+            mean=[0.485, 0.456, 0.406],  # ImageNet mean
+            std=[0.229, 0.224, 0.225]    # ImageNet std
+        )
+    ])
+
+def preprocess_batch(batch_images) -> jnp.ndarray:
+    """Convert batch of PIL images to JAX array with proper preprocessing."""
+    # Convert PIL images to tensors individually using new v2 API
+    to_tensor_transform = Compose([ToImage(), ToDtype(torch.float32, scale=True)])
+    tensor_list = []
+
+    for img in batch_images:
+        # Ensure image is RGB (3 channels)
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+
+        tensor = to_tensor_transform(img)
+
+        # Double-check tensor has 3 channels
+        if tensor.shape[0] != 3:
+            # If grayscale (1 channel), repeat to get 3 channels
+            if tensor.shape[0] == 1:
+                tensor = tensor.repeat(3, 1, 1)
+            else:
+                # Fallback: convert to RGB and retry
+                img_rgb = img.convert('RGB')
+                tensor = to_tensor_transform(img_rgb)
+
+        tensor_list.append(tensor)
+
+    # Stack into batch tensor: (batch_size, 3, 256, 256)
+    tensor_batch = torch.stack(tensor_list)
+
+    # Apply batch transforms (CenterCrop + Normalize work on batched tensors)
+    batch_transform = create_batch_preprocessing_pipeline()
+    transformed_batch = batch_transform(tensor_batch)  # (batch_size, 3, 224, 224)
+
+    # Convert to JAX array
+    return jnp.array(transformed_batch.numpy())
+
+def compute_accuracy(predictions: jnp.ndarray, labels: jnp.ndarray) -> Tuple[float, float]:
+    """Compute top-1 and top-5 accuracy."""
+    # Get top-5 predictions
+    top5_preds = jnp.argsort(predictions, axis=1)[:, -5:]  # Last 5 are highest
+    top1_preds = top5_preds[:, -1:]  # Last 1 is highest
+
+    # Compute accuracies
+    top1_correct = jnp.any(top1_preds == labels.reshape(-1, 1), axis=1)
+    top5_correct = jnp.any(top5_preds == labels.reshape(-1, 1), axis=1)
+
+    top1_acc = jnp.mean(top1_correct).item()
+    top5_acc = jnp.mean(top5_correct).item()
+
+    return top1_acc, top5_acc
+
+def evaluate_model(model, dataset, num_samples: int = None, batch_size: int = 32) -> Dict[str, float]:
+    """
+    Evaluate the model on ImageNet validation set.
+    
+    Args:
+        model: The ResNet model
+        dataset: Hugging Face dataset
+        num_samples: Number of samples to evaluate (None for all)
+        batch_size: Batch size for evaluation
+
+    Returns:
+        Dictionary containing accuracy metrics
+    """
+    print("🚀 Starting ImageNet evaluation...")
+
+    # Initialize metrics
+    total_samples = 0
+    correct_top1 = 0
+    correct_top5 = 0
+
+    # Create random key for model inference
+    key = jrandom.PRNGKey(42)
+    
+    # Replace BatchNorm layers with stateless versions for inference-only use
+    print("🔄 Converting BatchNorm layers to stateless versions...")
+    model = replace_batchnorm_with_stateless(model)
+    print("✅ BatchNorm conversion completed")
+    
+    # Create vectorized model function for batch processing (done once, outside loop)
+    # Note: ResNet expects key as keyword-only argument
+    def single_inference(x, key):
+        return model(x, key=key)
+
+    vmapped_model = eqx.filter_vmap(single_inference, in_axes=(0, 0))
+
+    # Create batched dataset
+    if num_samples:
+        dataset = dataset.take(num_samples)
+
+    batched_dataset = dataset.batch(batch_size)
+
+    try:
+        with tqdm(desc="Evaluating", unit="batches") as pbar:
+            for batch in batched_dataset:
+                # Extract batch data
+                batch_images = batch['image_pil']
+                batch_labels = jnp.array(batch['cls'])
+
+                # Preprocess batch of images
+                batch_data = preprocess_batch(batch_images)  # (batch_size, 3, 224, 224)
+
+                # Get predictions using pre-created vmapped model
+                key, subkey = jrandom.split(key)
+                batch_keys = jrandom.split(subkey, batch_data.shape[0])
+                predictions = vmapped_model(batch_data, batch_keys)  # (batch_size, num_classes)
+
+                # Compute batch accuracy
+                batch_top1, batch_top5 = compute_accuracy(predictions, batch_labels)
+
+                # Update running metrics
+                batch_len = len(batch_labels)
+                correct_top1 += batch_top1 * batch_len
+                correct_top5 += batch_top5 * batch_len
+                total_samples += batch_len
+
+                # Update progress
+                pbar.update(1)  # 1 batch processed
+                pbar.set_postfix({
+                    'Samples': total_samples,
+                    'Top-1': f'{correct_top1/total_samples:.3f}',
+                    'Top-5': f'{correct_top5/total_samples:.3f}'
+                })
+
+    except KeyboardInterrupt:
+        print("\n⚠️  Evaluation interrupted by user")
+
+    # Calculate final metrics
+    if total_samples > 0:
+        final_top1 = correct_top1 / total_samples
+        final_top5 = correct_top5 / total_samples
+
+        results = {
+            'top1_accuracy': final_top1,
+            'top5_accuracy': final_top5,
+            'total_samples': total_samples
+        }
+
+        print(f"\n📊 Evaluation Results:")
+        print(f"   Total samples: {total_samples}")
+        print(f"   Top-1 accuracy: {final_top1:.4f} ({final_top1*100:.2f}%)")
+        print(f"   Top-5 accuracy: {final_top5:.4f} ({final_top5*100:.2f}%)")
+
+        return results
+    else:
+        print("❌ No samples processed!")
+        return {}
+
+if __name__ == "__main__":
+    # Load model
+    model = resnet50(torch_weights=CLASSIFICATION_URLS["resnet50"])
+    print("✅ ResNet-50 model loaded successfully with PyTorch weights!")
+
+    # Load dataset
+    print("📥 Loading ImageNet validation dataset...")
+    dataset = load_dataset("pshishodia/imagenet-1k-256", split="validation", streaming=True)
+
+    # Full evaluation on entire validation dataset
+    print("\n🚀 Running full evaluation on ImageNet validation dataset...")
+    print("   This will evaluate all ~50,000 samples and may take some time...")
+    
+    # Use larger batch size for better performance on full dataset
+    full_results = evaluate_model(model, dataset, num_samples=None, batch_size=256)
+    
+    if full_results:
+        print(f"\n🎯 Final Results Summary:")
+        print(f"   Dataset: ImageNet-1K validation")
+        print(f"   Model: ResNet-50 (PyTorch weights → JAX/Equinox)")
+        print(f"   Total samples evaluated: {full_results['total_samples']:,}")
+        print(f"   Top-1 accuracy: {full_results['top1_accuracy']:.4f} ({full_results['top1_accuracy']*100:.2f}%)")
+        print(f"   Top-5 accuracy: {full_results['top5_accuracy']:.4f} ({full_results['top5_accuracy']*100:.2f}%)")
+        
+        # Compare with expected PyTorch performance
+        expected_top1 = 0.7598  # Expected ResNet-50 performance
+        diff = full_results['top1_accuracy'] - expected_top1
+        print(f"\n📈 Performance Comparison:")
+        print(f"   Expected PyTorch ResNet-50: ~75.98%")
+        print(f"   JAX/Equinox ResNet-50: {full_results['top1_accuracy']*100:.2f}%")
+        print(f"   Difference: {diff*100:+.2f}% {'✅' if abs(diff) < 0.005 else '⚠️'}")
+    else:
+        print("❌ Evaluation failed!")
