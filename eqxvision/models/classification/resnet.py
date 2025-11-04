@@ -11,6 +11,24 @@ from jaxtyping import Array
 from ...flexible_weight_loader import flexible_load_torch_weights
 
 
+def _create_norm_layer(norm_layer, num_channels):
+    """Create a normalization layer with proper parameters based on type."""
+    if norm_layer == eqx.nn.BatchNorm:
+        return norm_layer(input_size=num_channels, axis_name="batch")
+    elif norm_layer == eqx.nn.GroupNorm or (
+        hasattr(norm_layer, '__name__') and 'GroupNorm' in norm_layer.__name__
+    ):
+        # For GroupNorm, we need to specify groups and channels
+        # Use a common heuristic: num_groups = num_channels // 16
+        num_groups = max(1, num_channels // 16)
+        return eqx.nn.GroupNorm(groups=num_groups, channels=num_channels)
+    elif callable(norm_layer):
+        # If it's a callable (factory function), just call it with num_channels
+        return norm_layer(num_channels)
+    else:
+        raise ValueError(f"Unsupported norm_layer: {norm_layer}")
+
+
 def _conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1, key=None):
     """3x3 convolution with padding"""
     return nn.Conv2d(
@@ -66,10 +84,10 @@ class _ResNetBasicBlock(eqx.Module):
         keys = jrandom.split(key, 2)
         self.expansion = 1
         self.conv1 = _conv3x3(inplanes, planes, stride, key=keys[0])
-        self.bn1 = norm_layer(planes, axis_name="batch")
+        self.bn1 = _create_norm_layer(norm_layer, planes)
         self.relu = jnn.relu
         self.conv2 = _conv3x3(planes, planes, key=keys[1])
-        self.bn2 = norm_layer(planes, axis_name="batch")
+        self.bn2 = _create_norm_layer(norm_layer, planes)
         if downsample:
             self.downsample = downsample
         else:
@@ -128,11 +146,11 @@ class _ResNetBottleneck(eqx.Module):
         width = int(planes * (base_width / 64.0)) * groups
         # Both self.conv2 and self.downsample layers downsample the input when stride != 1
         self.conv1 = _conv1x1(inplanes, width, key=keys[0])
-        self.bn1 = norm_layer(width, axis_name="batch")
+        self.bn1 = _create_norm_layer(norm_layer, width)
         self.conv2 = _conv3x3(width, width, stride, groups, dilation, key=keys[1])
-        self.bn2 = norm_layer(width, axis_name="batch")
+        self.bn2 = _create_norm_layer(norm_layer, width)
         self.conv3 = _conv1x1(width, planes * self.expansion, key=keys[2])
-        self.bn3 = norm_layer(planes * self.expansion, axis_name="batch")
+        self.bn3 = _create_norm_layer(norm_layer, planes * self.expansion)
         self.relu = jnn.relu
         if downsample:
             self.downsample = downsample
@@ -204,13 +222,13 @@ class ResNet(eqx.Module):
         - `width_per_group`: Increases width of `block` by a factor of `width_per_group/64`.
         Defaults to `64`
         - `replace_stride_with_dilation`: Replacing `2x2` strides with dilated convolution. Defaults to None
-        - `norm_layer`: Normalisation to be applied on the inputs. Defaults to `BatchNorm`
+        - `norm_layer`: Normalisation to be applied on the inputs. Can be `BatchNorm`, `GroupNorm`, or a callable
+                       that takes num_channels and returns a norm layer. Defaults to `BatchNorm`
         - `key`: A `jax.random.PRNGKey` used to provide randomness for parameter
         initialisation. (Keyword only argument.)
 
         ??? Failure "Exceptions:"
 
-            - `NotImplementedError`: If a `norm_layer` other than `equinox.nn.BatchNorm` is used
             - `ValueError`: If `replace_stride_with_convolution` is not `None` or a `3-tuple`
 
         """
@@ -218,10 +236,6 @@ class ResNet(eqx.Module):
         if not norm_layer:
             norm_layer = eqx.nn.BatchNorm
 
-        if eqx.nn.BatchNorm != norm_layer:
-            raise NotImplementedError(
-                f"{type(norm_layer)} is not currently supported. Use `eqx.nn.BatchNorm` instead."
-            )
         if key is None:
             key = jrandom.PRNGKey(0)
 
@@ -248,7 +262,7 @@ class ResNet(eqx.Module):
             use_bias=False,
             key=keys[0],
         )
-        self.bn1 = norm_layer(input_size=self.inplanes, axis_name="batch")
+        self.bn1 = _create_norm_layer(norm_layer, self.inplanes)
         self.relu = jnn.relu
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0], norm_layer, key=keys[1])
@@ -297,7 +311,7 @@ class ResNet(eqx.Module):
                     _conv1x1(
                         self.inplanes, planes * EXPANSIONS[block], stride, key=keys[0]
                     ),
-                    norm_layer(planes * EXPANSIONS[block], axis_name="batch"),
+                    _create_norm_layer(norm_layer, planes * EXPANSIONS[block]),
                 ]
             )
 
@@ -508,3 +522,156 @@ def wide_resnet101_2(torch_weights=None, **kwargs) -> ResNet:
     if torch_weights:
         model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
+
+
+# GroupNorm ResNet variants for imitation learning / RL
+def resnet18_groupnorm(torch_weights=None, **kwargs) -> ResNet:
+    """ResNet-18 with GroupNorm (num_groups = channels // 16).
+    
+    Useful for imitation learning and RL with small batch sizes.
+    
+    Args:
+        torch_weights: Path or URL to PyTorch weights
+    
+    Example:
+        from eqxvision.models import resnet18_groupnorm
+        from eqxvision.utils import CLASSIFICATION_URLS
+        
+        model = resnet18_groupnorm(torch_weights=CLASSIFICATION_URLS["resnet18"])
+    """
+    from ...norm_utils import replace_norm
+    
+    # Load with BatchNorm, then convert to GroupNorm
+    model = resnet18(torch_weights=torch_weights, **kwargs)
+    model = replace_norm(model, target="groupnorm")
+    return model
+
+
+def resnet50_groupnorm(torch_weights=None, **kwargs) -> ResNet:
+    """ResNet-50 with GroupNorm (num_groups = channels // 16).
+    
+    Useful for imitation learning and RL with small batch sizes.
+    
+    Args:
+        torch_weights: Path or URL to PyTorch weights
+    
+    Example:
+        from eqxvision.models import resnet50_groupnorm
+        from eqxvision.utils import CLASSIFICATION_URLS
+        
+        encoder = resnet50_groupnorm(torch_weights=CLASSIFICATION_URLS["resnet50"])
+    """
+    from ...norm_utils import replace_norm
+    
+    # Load with BatchNorm, then convert to GroupNorm
+    model = resnet50(torch_weights=torch_weights, **kwargs)
+    model = replace_norm(model, target="groupnorm")
+    return model
+
+
+# Feature extraction utilities
+class ResNetFeatureExtractor(eqx.Module):
+    """Extract intermediate features from ResNet models.
+    
+    This is useful when you want to use ResNet as a feature extractor (e.g., for imitation learning)
+    and need features from intermediate layers rather than just the final classification output.
+    
+    **Arguments:**
+    
+    - `resnet_model`: A ResNet model
+    - `extract_layer`: Which layer to extract features from. Options: 'layer1', 'layer2', 'layer3', 'layer4'.
+                      Defaults to 'layer4' (the final convolutional features before avgpool)
+    - `include_avgpool`: Whether to apply average pooling to the extracted features. Defaults to True.
+    
+    **Example:**
+    
+    ```python
+    from eqxvision.models import resnet50_groupnorm, ResNetFeatureExtractor
+    from eqxvision.utils import CLASSIFICATION_URLS
+    
+    # Create a feature extractor that outputs layer4 features
+    encoder = resnet50_groupnorm(torch_weights=CLASSIFICATION_URLS["resnet50"])
+    feature_extractor = ResNetFeatureExtractor(encoder, extract_layer='layer4')
+    
+    # Extract features
+    features = feature_extractor(image, key=key)  # Shape: (2048, 1, 1) with avgpool
+    ```
+    """
+    
+    conv1: eqx.Module
+    bn1: eqx.Module
+    relu: Callable
+    maxpool: eqx.Module
+    layer1: eqx.Module
+    layer2: eqx.Module
+    layer3: eqx.Module
+    layer4: eqx.Module
+    avgpool: Optional[eqx.Module]
+    extract_layer: str
+    
+    def __init__(
+        self,
+        resnet_model: ResNet,
+        extract_layer: str = 'layer4',
+        include_avgpool: bool = True
+    ):
+        """Initialize the feature extractor.
+        
+        **Arguments:**
+        
+        - `resnet_model`: A ResNet model to extract features from
+        - `extract_layer`: Which layer to extract from ('layer1', 'layer2', 'layer3', or 'layer4')
+        - `include_avgpool`: Whether to apply average pooling after the extracted layer
+        """
+        if extract_layer not in ['layer1', 'layer2', 'layer3', 'layer4']:
+            raise ValueError(f"extract_layer must be one of ['layer1', 'layer2', 'layer3', 'layer4'], got {extract_layer}")
+        
+        self.conv1 = resnet_model.conv1
+        self.bn1 = resnet_model.bn1
+        self.relu = resnet_model.relu
+        self.maxpool = resnet_model.maxpool
+        self.layer1 = resnet_model.layer1
+        self.layer2 = resnet_model.layer2
+        self.layer3 = resnet_model.layer3
+        self.layer4 = resnet_model.layer4
+        self.avgpool = resnet_model.avgpool if include_avgpool else None
+        self.extract_layer = extract_layer
+    
+    def __call__(self, x: Array, *, key: "jax.random.PRNGKey") -> Array:
+        """Extract features from the specified layer.
+        
+        **Arguments:**
+        
+        - `x`: The input. Should be a JAX array with `3` channels
+        - `key`: Required parameter. Utilised by few layers such as `Dropout` or `DropPath`
+        
+        **Returns:**
+        
+        Features from the specified layer, optionally with average pooling applied
+        """
+        if key is None:
+            raise RuntimeError("The model requires a PRNGKey.")
+        
+        keys = jrandom.split(key, 5)
+        
+        # Initial layers
+        x = self.conv1(x, key=keys[0])
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+        
+        # Progressive feature extraction
+        x = self.layer1(x, key=keys[1])
+        if self.extract_layer == 'layer1':
+            return self.avgpool(x) if self.avgpool is not None else x
+        
+        x = self.layer2(x, key=keys[2])
+        if self.extract_layer == 'layer2':
+            return self.avgpool(x) if self.avgpool is not None else x
+        
+        x = self.layer3(x, key=keys[3])
+        if self.extract_layer == 'layer3':
+            return self.avgpool(x) if self.avgpool is not None else x
+        
+        x = self.layer4(x, key=keys[4])
+        return self.avgpool(x) if self.avgpool is not None else x

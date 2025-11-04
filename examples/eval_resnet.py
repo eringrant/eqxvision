@@ -17,47 +17,7 @@ from typing import Dict, Tuple
 from jax import config
 config.update("jax_default_matmul_precision", "highest")  # disables TF32 usage
 
-class StatelessBatchNorm(eqx.Module):
-    """A stateless BatchNorm for inference only - uses fixed mean, var, weight, bias."""
-    
-    weight: jnp.ndarray
-    bias: jnp.ndarray  
-    running_mean: jnp.ndarray
-    running_var: jnp.ndarray
-    eps: float
-    
-    def __init__(self, bn_layer: eqx.nn.BatchNorm):
-        # Extract the parameters from the original BatchNorm
-        self.weight = bn_layer.weight if bn_layer.weight is not None else jnp.ones(bn_layer.input_size)
-        self.bias = bn_layer.bias if bn_layer.bias is not None else jnp.zeros(bn_layer.input_size)
-        
-        # Extract running statistics from the ema_state_index
-        if hasattr(bn_layer, 'ema_state_index') and bn_layer.ema_state_index is not None:
-            self.running_mean, self.running_var = bn_layer.ema_state_index.init
-        else:
-            # Fallback values if no running stats available
-            self.running_mean = jnp.zeros(bn_layer.input_size)
-            self.running_var = jnp.ones(bn_layer.input_size)
-            
-        self.eps = bn_layer.eps
-        print(f"StatelessBatchNorm initialized with eps: {self.eps}")
-
-    def __call__(self, x, *, key=None):
-        # Standard BatchNorm formula: (x - mean) / sqrt(var + eps) * weight + bias
-        # Input x has shape (C, H, W), normalize along channel dimension
-        normalized = (x - self.running_mean.reshape(-1, 1, 1)) / jnp.sqrt(self.running_var.reshape(-1, 1, 1) + self.eps)
-        return normalized * self.weight.reshape(-1, 1, 1) + self.bias.reshape(-1, 1, 1)
-
-
-def replace_batchnorm_with_stateless(model):
-    """Recursively replace all BatchNorm layers with StatelessBatchNorm."""
-    
-    def replace_single_batchnorm(module):
-        if isinstance(module, eqx.nn.BatchNorm):
-            return StatelessBatchNorm(module)
-        return module
-    
-    return jtu.tree_map(replace_single_batchnorm, model, is_leaf=lambda x: isinstance(x, eqx.nn.BatchNorm))
+from eqxvision.norm_utils import replace_norm
 
 def create_batch_preprocessing_pipeline():
     """Create ImageNet preprocessing pipeline for batch processing."""
@@ -144,7 +104,7 @@ def evaluate_model(model, dataset, num_samples: int = None, batch_size: int = 32
     
     # Replace BatchNorm layers with stateless versions for inference-only use
     print("🔄 Converting BatchNorm layers to stateless versions...")
-    model = replace_batchnorm_with_stateless(model)
+    model = replace_norm(model, target="stateless")
     print("✅ BatchNorm conversion completed")
     
     # Create vectorized model function for batch processing (done once, outside loop)

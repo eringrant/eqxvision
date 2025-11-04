@@ -54,6 +54,7 @@ from .classification.regnet import (
 )
 from .classification.resnet import (
     ResNet,
+    ResNetFeatureExtractor,
     resnet18,
     resnet34,
     resnet50,
@@ -63,6 +64,8 @@ from .classification.resnet import (
     resnext101_32x8d,
     wide_resnet50_2,
     wide_resnet101_2,
+    resnet18_groupnorm,
+    resnet50_groupnorm,
 )
 from .classification.shufflenetv2 import (
     shufflenet_v2_x0_5,

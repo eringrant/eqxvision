@@ -16,8 +16,8 @@ classifiers = [
 ]
 dependencies=[
     "equinox >= 0.7.0",
-    "torch >=1.7.1",
-    "torchvision >=0.8.0"
+    # "torch >=1.7.1",
+    # "torchvision >=0.8.0"
 ]
 
 [project.urls]
