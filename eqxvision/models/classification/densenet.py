@@ -6,12 +6,13 @@ import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
+from equinox._custom_types import sentinel
 from jaxtyping import Array
 
 from ...utils import load_torch_weights
 
 
-class _DenseLayer(eqx.Module):
+class _DenseLayer(eqx.nn.StatefulLayer):
     norm1: eqx.nn.BatchNorm
     relu: nn.Lambda
     conv1: nn.Conv2d
@@ -52,21 +53,29 @@ class _DenseLayer(eqx.Module):
         self.dropout = nn.Dropout(p=float(drop_rate))
 
     def __call__(
-        self, x: Union[Array, Sequence[Array]], *, key: "jax.random.PRNGKey"
-    ) -> Array:
+        self,
+        x: Union[Array, Sequence[Array]],
+        state: eqx.nn.State = sentinel,
+        *,
+        key: "jax.random.PRNGKey",
+    ):
         if isinstance(x, Array):
             prev_features = [x]
         else:
             prev_features = x
 
         concated_features = jnp.concatenate(prev_features, axis=0)
-        bottleneck_output = self.conv1(self.relu(self.norm1(concated_features)))
-        new_features = self.conv2(self.relu(self.norm2(bottleneck_output)))
+        normed, state = self.norm1(concated_features, state)
+        bottleneck_output = self.conv1(self.relu(normed))
+        normed2, state = self.norm2(bottleneck_output, state)
+        new_features = self.conv2(self.relu(normed2))
         new_features = self.dropout(new_features, key=key)
-        return new_features
+        if state is sentinel:
+            return new_features
+        return new_features, state
 
 
-class _DenseBlock(eqx.Module):
+class _DenseBlock(eqx.nn.StatefulLayer):
     layers: Sequence[eqx.Module]
     num_layers: int
 
@@ -93,16 +102,23 @@ class _DenseBlock(eqx.Module):
             )
             self.layers.append(layer)
 
-    def __call__(self, x: Array, *, key: "jax.random.PRNGKey") -> Array:
+    def __call__(
+        self, x: Array, state: eqx.nn.State = sentinel, *, key: "jax.random.PRNGKey"
+    ):
         features = [x]
         keys = jrandom.split(key, self.num_layers)
         for i in range(self.num_layers):
-            new_features = self.layers[i](features, key=keys[i])
+            if state is not sentinel:
+                new_features, state = self.layers[i](features, state=state, key=keys[i])
+            else:
+                new_features = self.layers[i](features, key=keys[i])
             features.append(new_features)
-        return jnp.concatenate(features, 0)
+        if state is sentinel:
+            return jnp.concatenate(features, 0)
+        return jnp.concatenate(features, 0), state
 
 
-class _Transition(eqx.Module):
+class _Transition(eqx.nn.StatefulLayer):
     layers: nn.Sequential
 
     def __init__(
@@ -128,11 +144,15 @@ class _Transition(eqx.Module):
             ]
         )
 
-    def __call__(self, x: Array, *, key: "jax.random.PRNGKey") -> Array:
+    def __call__(
+        self, x: Array, state: eqx.nn.State = sentinel, *, key: "jax.random.PRNGKey"
+    ):
+        if state is not sentinel:
+            return self.layers(x, state=state, key=key)
         return self.layers(x, key=key)
 
 
-class DenseNet(eqx.Module):
+class DenseNet(eqx.nn.StatefulLayer):
     """A simple port of `torchvision.models.densenet`"""
 
     features: nn.Sequential
@@ -216,15 +236,23 @@ class DenseNet(eqx.Module):
         # Linear layer
         self.classifier = nn.Linear(num_features, num_classes, key=keys[-1])
 
-    def __call__(self, x: Array, *, key: "jax.random.PRNGKey") -> Array:
+    def __call__(
+        self, x: Array, state: eqx.nn.State = sentinel, *, key: "jax.random.PRNGKey"
+    ):
         """**Arguments:**
 
         - `x`: The input. Should be a JAX array with `3` channels
+        - `state`: An `eqx.nn.State` object for batch norm running statistics
         - `key`: Required parameter. Utilised by few layers such as `Dropout` or `DropPath`
         """
-        out = self.features(x, key=key)
+        if state is not sentinel:
+            out, state = self.features(x, state=state, key=key)
+        else:
+            out = self.features(x, key=key)
         out = jnp.ravel(out)
         out = self.classifier(out)
+        if state is not sentinel:
+            return out, state
         return out
 
 

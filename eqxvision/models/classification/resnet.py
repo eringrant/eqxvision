@@ -6,9 +6,18 @@ import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
+from equinox._custom_types import sentinel
 from jaxtyping import Array
 
 from ...flexible_weight_loader import flexible_load_torch_weights
+
+
+def _call_norm(norm, x, state):
+    """Call a norm layer, handling both stateful (BatchNorm) and non-stateful (GroupNorm) layers."""
+    if isinstance(norm, eqx.nn.StatefulLayer) and norm.is_stateful():
+        return norm(x, state)
+    else:
+        return norm(x), state
 
 
 def _create_norm_layer(norm_layer, num_channels):
@@ -16,7 +25,7 @@ def _create_norm_layer(norm_layer, num_channels):
     if norm_layer == eqx.nn.BatchNorm:
         return norm_layer(input_size=num_channels, axis_name="batch")
     elif norm_layer == eqx.nn.GroupNorm or (
-        hasattr(norm_layer, '__name__') and 'GroupNorm' in norm_layer.__name__
+        hasattr(norm_layer, "__name__") and "GroupNorm" in norm_layer.__name__
     ):
         # For GroupNorm, we need to specify groups and channels
         # Use a common heuristic: num_groups = num_channels // 16
@@ -51,7 +60,7 @@ def _conv1x1(in_planes, out_planes, stride=1, key=None):
     )
 
 
-class _ResNetBasicBlock(eqx.Module):
+class _ResNetBasicBlock(eqx.nn.StatefulLayer):
     expansion: int
     conv1: eqx.Module
     bn1: eqx.Module
@@ -95,21 +104,33 @@ class _ResNetBasicBlock(eqx.Module):
         self.stride = stride
 
     def __call__(
-        self, x: Array, *, key: Optional["jax.random.PRNGKey"] = None
-    ) -> Array:
+        self,
+        x: Array,
+        state: eqx.nn.State = sentinel,
+        *,
+        key: Optional["jax.random.PRNGKey"] = None,
+    ):
         out = self.conv1(x)
-        out = self.bn1(out)
+        out, state = _call_norm(self.bn1, out, state)
         out = self.relu(out)
         out = self.conv2(out)
-        out = self.bn2(out)
-        identity = self.downsample(x)
+        out, state = _call_norm(self.bn2, out, state)
+        if (
+            isinstance(self.downsample, eqx.nn.StatefulLayer)
+            and self.downsample.is_stateful()
+        ):
+            identity, state = self.downsample(x, state=state)
+        else:
+            identity = self.downsample(x)
         out += identity
         out = self.relu(out)
 
-        return out
+        if state is sentinel:
+            return out
+        return out, state
 
 
-class _ResNetBottleneck(eqx.Module):
+class _ResNetBottleneck(eqx.nn.StatefulLayer):
     # Bottleneck in torchvision places the stride for downsampling at 3x3 convolution(self.conv2)
     # while original implementation places the stride at the first 1x1 convolution(self.conv1)
     # according to "Deep residual learning for image recognition"https://arxiv.org/abs/1512.03385.
@@ -158,31 +179,45 @@ class _ResNetBottleneck(eqx.Module):
             self.downsample = nn.Identity()
         self.stride = stride
 
-    def __call__(self, x: Array, *, key: Optional["jax.random.PRNGKey"] = None):
+    def __call__(
+        self,
+        x: Array,
+        state: eqx.nn.State = sentinel,
+        *,
+        key: Optional["jax.random.PRNGKey"] = None,
+    ):
 
         out = self.conv1(x)
-        out = self.bn1(out)
+        out, state = _call_norm(self.bn1, out, state)
         out = self.relu(out)
 
         out = self.conv2(out)
-        out = self.bn2(out)
+        out, state = _call_norm(self.bn2, out, state)
         out = self.relu(out)
 
         out = self.conv3(out)
-        out = self.bn3(out)
+        out, state = _call_norm(self.bn3, out, state)
 
-        identity = self.downsample(x)
+        if (
+            isinstance(self.downsample, eqx.nn.StatefulLayer)
+            and self.downsample.is_stateful()
+        ):
+            identity, state = self.downsample(x, state=state)
+        else:
+            identity = self.downsample(x)
 
         out += identity
         out = self.relu(out)
 
-        return out
+        if state is sentinel:
+            return out
+        return out, state
 
 
 EXPANSIONS = {_ResNetBasicBlock: 1, _ResNetBottleneck: 4}
 
 
-class ResNet(eqx.Module):
+class ResNet(eqx.nn.StatefulLayer):
     """A simple port of `torchvision.models.resnet`"""
 
     inplanes: int
@@ -345,29 +380,40 @@ class ResNet(eqx.Module):
 
         return nn.Sequential(layers)
 
-    def __call__(self, x: Array, *, key: "jax.random.PRNGKey") -> Array:
+    def __call__(
+        self, x: Array, state: eqx.nn.State = sentinel, *, key: "jax.random.PRNGKey"
+    ):
         """**Arguments:**
 
         - `x`: The input. Should be a JAX array with `3` channels
+        - `state`: An `eqx.nn.State` object for batch norm running statistics
         - `key`: Required parameter. Utilised by few layers such as `Dropout` or `DropPath`
         """
         if key is None:
             raise RuntimeError("The model requires a PRNGKey.")
         keys = jrandom.split(key, 6)
         x = self.conv1(x, key=keys[0])
-        x = self.bn1(x)
+        x, state = _call_norm(self.bn1, x, state)
         x = self.relu(x)
         x = self.maxpool(x)
 
-        x = self.layer1(x, key=keys[1])
-        x = self.layer2(x, key=keys[2])
-        x = self.layer3(x, key=keys[3])
-        x = self.layer4(x, key=keys[4])
+        if state is not sentinel:
+            x, state = self.layer1(x, state=state, key=keys[1])
+            x, state = self.layer2(x, state=state, key=keys[2])
+            x, state = self.layer3(x, state=state, key=keys[3])
+            x, state = self.layer4(x, state=state, key=keys[4])
+        else:
+            x = self.layer1(x, key=keys[1])
+            x = self.layer2(x, key=keys[2])
+            x = self.layer3(x, key=keys[3])
+            x = self.layer4(x, key=keys[4])
 
         x = self.avgpool(x)
         x = jnp.ravel(x)
         x = self.fc(x, key=keys[5])
 
+        if state is not sentinel:
+            return x, state
         return x
 
 
@@ -527,20 +573,20 @@ def wide_resnet101_2(torch_weights=None, **kwargs) -> ResNet:
 # GroupNorm ResNet variants for imitation learning / RL
 def resnet18_groupnorm(torch_weights=None, **kwargs) -> ResNet:
     """ResNet-18 with GroupNorm (num_groups = channels // 16).
-    
+
     Useful for imitation learning and RL with small batch sizes.
-    
+
     Args:
         torch_weights: Path or URL to PyTorch weights
-    
+
     Example:
         from eqxvision.models import resnet18_groupnorm
         from eqxvision.utils import CLASSIFICATION_URLS
-        
+
         model = resnet18_groupnorm(torch_weights=CLASSIFICATION_URLS["resnet18"])
     """
     from ...norm_utils import replace_norm
-    
+
     # Load with BatchNorm, then convert to GroupNorm
     model = resnet18(torch_weights=torch_weights, **kwargs)
     model = replace_norm(model, target="groupnorm")
@@ -549,20 +595,20 @@ def resnet18_groupnorm(torch_weights=None, **kwargs) -> ResNet:
 
 def resnet50_groupnorm(torch_weights=None, **kwargs) -> ResNet:
     """ResNet-50 with GroupNorm (num_groups = channels // 16).
-    
+
     Useful for imitation learning and RL with small batch sizes.
-    
+
     Args:
         torch_weights: Path or URL to PyTorch weights
-    
+
     Example:
         from eqxvision.models import resnet50_groupnorm
         from eqxvision.utils import CLASSIFICATION_URLS
-        
+
         encoder = resnet50_groupnorm(torch_weights=CLASSIFICATION_URLS["resnet50"])
     """
     from ...norm_utils import replace_norm
-    
+
     # Load with BatchNorm, then convert to GroupNorm
     model = resnet50(torch_weights=torch_weights, **kwargs)
     model = replace_norm(model, target="groupnorm")
@@ -570,34 +616,34 @@ def resnet50_groupnorm(torch_weights=None, **kwargs) -> ResNet:
 
 
 # Feature extraction utilities
-class ResNetFeatureExtractor(eqx.Module):
+class ResNetFeatureExtractor(eqx.nn.StatefulLayer):
     """Extract intermediate features from ResNet models.
-    
+
     This is useful when you want to use ResNet as a feature extractor (e.g., for imitation learning)
     and need features from intermediate layers rather than just the final classification output.
-    
+
     **Arguments:**
-    
+
     - `resnet_model`: A ResNet model
     - `extract_layer`: Which layer to extract features from. Options: 'layer1', 'layer2', 'layer3', 'layer4'.
                       Defaults to 'layer4' (the final convolutional features before avgpool)
     - `include_avgpool`: Whether to apply average pooling to the extracted features. Defaults to True.
-    
+
     **Example:**
-    
+
     ```python
     from eqxvision.models import resnet50_groupnorm, ResNetFeatureExtractor
     from eqxvision.utils import CLASSIFICATION_URLS
-    
+
     # Create a feature extractor that outputs layer4 features
     encoder = resnet50_groupnorm(torch_weights=CLASSIFICATION_URLS["resnet50"])
     feature_extractor = ResNetFeatureExtractor(encoder, extract_layer='layer4')
-    
+
     # Extract features
     features = feature_extractor(image, key=key)  # Shape: (2048, 1, 1) with avgpool
     ```
     """
-    
+
     conv1: eqx.Module
     bn1: eqx.Module
     relu: Callable
@@ -608,24 +654,26 @@ class ResNetFeatureExtractor(eqx.Module):
     layer4: eqx.Module
     avgpool: Optional[eqx.Module]
     extract_layer: str
-    
+
     def __init__(
         self,
         resnet_model: ResNet,
-        extract_layer: str = 'layer4',
-        include_avgpool: bool = True
+        extract_layer: str = "layer4",
+        include_avgpool: bool = True,
     ):
         """Initialize the feature extractor.
-        
+
         **Arguments:**
-        
+
         - `resnet_model`: A ResNet model to extract features from
         - `extract_layer`: Which layer to extract from ('layer1', 'layer2', 'layer3', or 'layer4')
         - `include_avgpool`: Whether to apply average pooling after the extracted layer
         """
-        if extract_layer not in ['layer1', 'layer2', 'layer3', 'layer4']:
-            raise ValueError(f"extract_layer must be one of ['layer1', 'layer2', 'layer3', 'layer4'], got {extract_layer}")
-        
+        if extract_layer not in ["layer1", "layer2", "layer3", "layer4"]:
+            raise ValueError(
+                f"extract_layer must be one of ['layer1', 'layer2', 'layer3', 'layer4'], got {extract_layer}"
+            )
+
         self.conv1 = resnet_model.conv1
         self.bn1 = resnet_model.bn1
         self.relu = resnet_model.relu
@@ -636,42 +684,71 @@ class ResNetFeatureExtractor(eqx.Module):
         self.layer4 = resnet_model.layer4
         self.avgpool = resnet_model.avgpool if include_avgpool else None
         self.extract_layer = extract_layer
-    
-    def __call__(self, x: Array, *, key: "jax.random.PRNGKey") -> Array:
+
+    def __call__(
+        self, x: Array, state: eqx.nn.State = sentinel, *, key: "jax.random.PRNGKey"
+    ):
         """Extract features from the specified layer.
-        
+
         **Arguments:**
-        
+
         - `x`: The input. Should be a JAX array with `3` channels
+        - `state`: An `eqx.nn.State` object for batch norm running statistics
         - `key`: Required parameter. Utilised by few layers such as `Dropout` or `DropPath`
-        
+
         **Returns:**
-        
-        Features from the specified layer, optionally with average pooling applied
+
+        A tuple of (features, state) when state is provided, or just features when state is sentinel.
         """
         if key is None:
             raise RuntimeError("The model requires a PRNGKey.")
-        
+
         keys = jrandom.split(key, 5)
-        
+
         # Initial layers
         x = self.conv1(x, key=keys[0])
-        x = self.bn1(x)
+        x, state = _call_norm(self.bn1, x, state)
         x = self.relu(x)
         x = self.maxpool(x)
-        
+
+        _stateful = state is not sentinel
+
         # Progressive feature extraction
-        x = self.layer1(x, key=keys[1])
-        if self.extract_layer == 'layer1':
-            return self.avgpool(x) if self.avgpool is not None else x
-        
-        x = self.layer2(x, key=keys[2])
-        if self.extract_layer == 'layer2':
-            return self.avgpool(x) if self.avgpool is not None else x
-        
-        x = self.layer3(x, key=keys[3])
-        if self.extract_layer == 'layer3':
-            return self.avgpool(x) if self.avgpool is not None else x
-        
-        x = self.layer4(x, key=keys[4])
-        return self.avgpool(x) if self.avgpool is not None else x
+        if _stateful:
+            x, state = self.layer1(x, state=state, key=keys[1])
+        else:
+            x = self.layer1(x, key=keys[1])
+        if self.extract_layer == "layer1":
+            x = self.avgpool(x) if self.avgpool is not None else x
+            if _stateful:
+                return x, state
+            return x
+
+        if _stateful:
+            x, state = self.layer2(x, state=state, key=keys[2])
+        else:
+            x = self.layer2(x, key=keys[2])
+        if self.extract_layer == "layer2":
+            x = self.avgpool(x) if self.avgpool is not None else x
+            if _stateful:
+                return x, state
+            return x
+
+        if _stateful:
+            x, state = self.layer3(x, state=state, key=keys[3])
+        else:
+            x = self.layer3(x, key=keys[3])
+        if self.extract_layer == "layer3":
+            x = self.avgpool(x) if self.avgpool is not None else x
+            if _stateful:
+                return x, state
+            return x
+
+        if _stateful:
+            x, state = self.layer4(x, state=state, key=keys[4])
+        else:
+            x = self.layer4(x, key=keys[4])
+        x = self.avgpool(x) if self.avgpool is not None else x
+        if _stateful:
+            return x, state
+        return x

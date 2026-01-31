@@ -1,12 +1,12 @@
 from typing import Any, cast, Dict, List, Optional, Union
 
 import equinox as eqx
-# import equinox.experimental as eqex
 import equinox.nn as nn
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
+from equinox._custom_types import sentinel
 from jaxtyping import Array
 
 from ...utils import load_torch_weights
@@ -61,7 +61,7 @@ _cfgs: Dict[str, List[Union[str, int]]] = {
 }
 
 
-class VGG(eqx.Module):
+class VGG(eqx.nn.StatefulLayer):
     """A simple port of `torchvision.models.vgg`"""
 
     features: nn.Sequential
@@ -106,18 +106,30 @@ class VGG(eqx.Module):
             ]
         )
 
-    def __call__(self, x: Array, *, key: "jax.random.PRNGKey") -> Array:
+    def is_stateful(self) -> bool:
+        return self.features.is_stateful()
+
+    def __call__(
+        self, x: Array, state: eqx.nn.State = sentinel, *, key: "jax.random.PRNGKey"
+    ):
         """**Arguments:**
 
         - `x`: The input. Should be a JAX array with `3` channels.
+        - `state`: An `eqx.nn.State` object for batch norm running statistics.
+            Only required when batch normalization is enabled.
         - `key`: Required parameter. Utilised by few layers such as `Dropout` or `DropPath`.
         """
         keys = jrandom.split(key, 2)
-        x = self.features(x, key=keys[0])
+        if state is sentinel:
+            x = self.features(x, key=keys[0])
+        else:
+            x, state = self.features(x, state=state, key=keys[0])
         x = self.avgpool(x)
         x = jnp.ravel(x)
         x = self.classifier(x, key=keys[1])
-        return x
+        if state is sentinel:
+            return x
+        return x, state
 
 
 def _make_layers(

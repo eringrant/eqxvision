@@ -7,6 +7,7 @@ import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jr
+from equinox._custom_types import sentinel
 from jaxtyping import Array
 
 from ...layers import ConvNormActivation, SqueezeExcitation
@@ -108,7 +109,7 @@ class BottleneckTransform(nn.Sequential):
         super().__init__(layers)
 
 
-class ResBottleneckBlock(eqx.Module):
+class ResBottleneckBlock(eqx.nn.StatefulLayer):
     """Residual bottleneck block: x + F(x), F = bottleneck transform."""
 
     proj: eqx.Module
@@ -158,11 +159,24 @@ class ResBottleneckBlock(eqx.Module):
         self.activation = activation_layer
 
     def __call__(
-        self, x: Array, *, key: Optional["jax.random.PRNGKey"] = None
-    ) -> Array:
+        self,
+        x: Array,
+        state: eqx.nn.State = sentinel,
+        *,
+        key: Optional["jax.random.PRNGKey"] = None,
+    ):
         keys = jr.split(key, 2)
-        x = self.proj(x, key=keys[0]) + self.f(x, key=keys[1])
-        return self.activation(x)
+        if state is not sentinel:
+            if isinstance(self.proj, eqx.nn.StatefulLayer) and self.proj.is_stateful():
+                proj_out, state = self.proj(x, state=state, key=keys[0])
+            else:
+                proj_out = self.proj(x, key=keys[0])
+            f_out, state = self.f(x, state=state, key=keys[1])
+            return self.activation(proj_out + f_out), state
+        else:
+            proj_out = self.proj(x, key=keys[0])
+            f_out = self.f(x, key=keys[1])
+            return self.activation(proj_out + f_out)
 
 
 class AnyStage(nn.Sequential):
@@ -326,7 +340,7 @@ class BlockParams:
         return stage_widths, group_widths_min
 
 
-class RegNet(eqx.Module):
+class RegNet(eqx.nn.StatefulLayer):
     """A simple port of `torchvision.models.regnet`"""
 
     stem: eqx.Module
@@ -365,7 +379,7 @@ class RegNet(eqx.Module):
         if stem_type is None:
             stem_type = SimpleStemIN
         if norm_layer is None:
-            norm_layer = eqx.experimental.BatchNorm
+            norm_layer = eqx.nn.BatchNorm
         if block_type is None:
             block_type = ResBottleneckBlock
         if activation is None:
@@ -415,18 +429,27 @@ class RegNet(eqx.Module):
             in_features=current_width, out_features=num_classes, key=keys[1]
         )
 
-    def __call__(self, x: Array, *, key: "jax.random.PRNGKey") -> Array:
+    def __call__(
+        self, x: Array, state: eqx.nn.State = sentinel, *, key: "jax.random.PRNGKey"
+    ):
         """**Arguments:**
 
         - `x`: The input. Should be a JAX array with `3` channels
+        - `state`: An `eqx.nn.State` object for batch norm running statistics
         - `key`: Required parameter. Utilised by few layers such as `Dropout` or `DropPath`
         """
         keys = jr.split(key, 2)
-        x = self.stem(x, key=keys[0])
-        x = self.trunk_output(x, key=keys[1])
+        if state is not sentinel:
+            x, state = self.stem(x, state=state, key=keys[0])
+            x, state = self.trunk_output(x, state=state, key=keys[1])
+        else:
+            x = self.stem(x, key=keys[0])
+            x = self.trunk_output(x, key=keys[1])
         x = self.avgpool(x)
         x = jnp.ravel(x)
         x = self.fc(x)
+        if state is not sentinel:
+            return x, state
         return x
 
 
@@ -438,7 +461,7 @@ def _regnet(
 ) -> RegNet:
 
     norm_layer = kwargs.pop(
-        "norm_layer", partial(eqx.experimental.BatchNorm, eps=1e-05, momentum=0.1)
+        "norm_layer", partial(eqx.nn.BatchNorm, eps=1e-05, momentum=0.1)
     )
     model = RegNet(block_params, norm_layer=norm_layer, **kwargs)
     if torch_weights:

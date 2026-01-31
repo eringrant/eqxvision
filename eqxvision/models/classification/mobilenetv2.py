@@ -1,19 +1,18 @@
 from typing import Any, Callable, List, Optional
 
 import equinox as eqx
-# import equinox.experimental as eqxex
 import equinox.nn as nn
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
-from jaxtyping import Array
+from equinox._custom_types import sentinel
 
 from ...layers import ConvNormActivation
 from ...utils import _make_divisible, load_torch_weights
 
 
-class _InvertedResidual(eqx.Module):
+class _InvertedResidual(eqx.nn.StatefulLayer):
     stride: int
     use_res_connect: int
     conv: nn.Sequential
@@ -37,7 +36,7 @@ class _InvertedResidual(eqx.Module):
         assert stride in [1, 2]
 
         if norm_layer is None:
-            norm_layer = eqxex.BatchNorm
+            norm_layer = eqx.nn.BatchNorm
 
         hidden_dim = int(round(inp * expand_ratio))
         self.use_res_connect = self.stride == 1 and inp == oup
@@ -75,19 +74,33 @@ class _InvertedResidual(eqx.Module):
         self.conv = nn.Sequential(layers)
         self.out_channels = oup
 
-    def __call__(self, x, *, key: Optional["jax.random.PRNGKey"] = None) -> Array:
+    def __call__(
+        self,
+        x,
+        state: eqx.nn.State = sentinel,
+        *,
+        key: Optional["jax.random.PRNGKey"] = None,
+    ):
         """**Arguments:**
 
         - `x`: The input `JAX` array
+        - `state`: An `eqx.nn.State` object for batch norm running statistics
         - `key`: Forwarded to individual `eqx.Module` attributes
         """
-        if self.use_res_connect:
-            return x + self.conv(x, key=key)
+        if state is not sentinel:
+            if self.use_res_connect:
+                out, state = self.conv(x, state=state, key=key)
+                return x + out, state
+            else:
+                return self.conv(x, state=state, key=key)
         else:
-            return self.conv(x, key=key)
+            if self.use_res_connect:
+                return x + self.conv(x, key=key)
+            else:
+                return self.conv(x, key=key)
 
 
-class MobileNetV2(eqx.Module):
+class MobileNetV2(eqx.nn.StatefulLayer):
     """A simple port of `torchvision.models.mobilenetv2`"""
 
     features: nn.Sequential
@@ -131,7 +144,7 @@ class MobileNetV2(eqx.Module):
             block = _InvertedResidual
 
         if norm_layer is None:
-            norm_layer = eqxex.BatchNorm
+            norm_layer = eqx.nn.BatchNorm
 
         input_channel = 32
         last_channel = 1280
@@ -214,17 +227,23 @@ class MobileNetV2(eqx.Module):
 
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
 
-    def __call__(self, x, *, key: "jax.random.PRNGKey") -> Array:
+    def __call__(self, x, state: eqx.nn.State = sentinel, *, key: "jax.random.PRNGKey"):
         """**Arguments:**
 
         - `x`: The input `JAX` array
+        - `state`: An `eqx.nn.State` object for batch norm running statistics
         - `key`: Required parameter. Utilised by few layers such as `Dropout` or `DropPath`
         """
         keys = jrandom.split(key, 3)
-        x = self.features(x, key=keys[0])
+        if state is not sentinel:
+            x, state = self.features(x, state=state, key=keys[0])
+        else:
+            x = self.features(x, key=keys[0])
         x = self.pool(x, key=keys[1])
         x = jnp.ravel(x)
         x = self.classifier(x, key=keys[2])
+        if state is not sentinel:
+            return x, state
         return x
 
 

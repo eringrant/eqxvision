@@ -6,6 +6,7 @@ import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
+from equinox._custom_types import sentinel
 from jaxtyping import Array
 
 from ...utils import load_torch_weights
@@ -20,7 +21,7 @@ def _channel_shuffle(x: Array, groups: int) -> Array:
     return x
 
 
-class _InvertedResidual(eqx.Module):
+class _InvertedResidual(eqx.nn.StatefulLayer):
     stride: int
     branch1: nn.Sequential
     branch2: nn.Sequential
@@ -122,18 +123,30 @@ class _InvertedResidual(eqx.Module):
             i, o, kernel_size, stride, padding, use_bias=bias, groups=i, key=key
         )
 
-    def __call__(self, x, *, key: "jax.random.PRNGKey") -> Array:
+    def __call__(self, x, state: eqx.nn.State = sentinel, *, key: "jax.random.PRNGKey"):
         if self.stride == 1:
             x1, x2 = jnp.split(x, 2, axis=0)
-            out = jnp.concatenate((x1, self.branch2(x2)), axis=0)
+            if state is not sentinel:
+                branch2_out, state = self.branch2(x2, state=state)
+            else:
+                branch2_out = self.branch2(x2)
+            out = jnp.concatenate((x1, branch2_out), axis=0)
         else:
-            out = jnp.concatenate((self.branch1(x), self.branch2(x)), axis=0)
+            if state is not sentinel:
+                branch1_out, state = self.branch1(x, state=state)
+                branch2_out, state = self.branch2(x, state=state)
+            else:
+                branch1_out = self.branch1(x)
+                branch2_out = self.branch2(x)
+            out = jnp.concatenate((branch1_out, branch2_out), axis=0)
 
         out = _channel_shuffle(out, 2)
+        if state is not sentinel:
+            return out, state
         return out
 
 
-class ShuffleNetV2(eqx.Module):
+class ShuffleNetV2(eqx.nn.StatefulLayer):
     """A simple port of `torchvision.models.shufflenetv2`"""
 
     conv1: nn.Sequential
@@ -233,21 +246,38 @@ class ShuffleNetV2(eqx.Module):
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(output_channels, num_classes, key=keys[1])
 
-    def __call__(self, x, *, key: Optional["jax.random.PRNGKey"] = None) -> Array:
+    def __call__(
+        self,
+        x,
+        state: eqx.nn.State = sentinel,
+        *,
+        key: Optional["jax.random.PRNGKey"] = None,
+    ):
         """**Arguments:**
 
         - `x`: The input `JAX` array
+        - `state`: An `eqx.nn.State` object for batch norm running statistics
         - `key`: Required parameter. Utilised by few layers such as `Dropout` or `DropPath`
         """
         keys = jrandom.split(key, 5)
-        x = self.conv1(x, key=keys[0])
-        x = self.maxpool(x)
-        x = self.stage2(x, key=keys[1])
-        x = self.stage3(x, key=keys[2])
-        x = self.stage4(x, key=keys[3])
-        x = self.conv5(x, key=keys[4])
+        if state is not sentinel:
+            x, state = self.conv1(x, state=state, key=keys[0])
+            x = self.maxpool(x)
+            x, state = self.stage2(x, state=state, key=keys[1])
+            x, state = self.stage3(x, state=state, key=keys[2])
+            x, state = self.stage4(x, state=state, key=keys[3])
+            x, state = self.conv5(x, state=state, key=keys[4])
+        else:
+            x = self.conv1(x, key=keys[0])
+            x = self.maxpool(x)
+            x = self.stage2(x, key=keys[1])
+            x = self.stage3(x, key=keys[2])
+            x = self.stage4(x, key=keys[3])
+            x = self.conv5(x, key=keys[4])
         x = jnp.ravel(self.pool(x))
         x = self.fc(x)
+        if state is not sentinel:
+            return x, state
         return x
 
 

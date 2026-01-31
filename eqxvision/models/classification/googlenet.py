@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, Callable, List, Optional, Union
+from typing import Any, Callable, List, Optional
 
 import equinox as eqx
 import equinox.nn as nn
@@ -7,12 +7,13 @@ import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
+from equinox._custom_types import sentinel
 from jaxtyping import Array
 
 from ...utils import load_torch_weights
 
 
-class GoogLeNet(eqx.Module):
+class GoogLeNet(eqx.nn.StatefulLayer):
     """A simple port of `torchvision.models.GoogLeNet`"""
 
     aux_logits: bool
@@ -115,71 +116,78 @@ class GoogLeNet(eqx.Module):
         self.fc = nn.Linear(1024, num_classes, key=keys[14])
 
     def __call__(
-        self, x: Array, *, key: "jax.random.PRNGKey"
-    ) -> Union[Array, Optional[Array], Optional[Array]]:
+        self, x: Array, state: eqx.nn.State = sentinel, *, key: "jax.random.PRNGKey"
+    ):
         """**Arguments:**
 
         - `x`: The input. Should be a JAX array with `3` channels
+        - `state`: An `eqx.nn.State` object for batch norm running statistics
         - `key`: Required parameter. Utilised by few layers such as `Dropout` or `DropPath`
         """
         if key is None:
             raise RuntimeError("The model requires a PRNGKey.")
-        keys = jrandom.split(key, 14)
-        # N x 3 x 224 x 224
-        x = self.conv1(x, key=keys[0])
-        # N x 64 x 112 x 112
-        x = self.maxpool1(x, key=keys[1])
-        # N x 64 x 56 x 56
-        x = self.conv2(x, key=keys[2])
-        # N x 64 x 56 x 56
-        x = self.conv3(x, key=keys[3])
-        # N x 192 x 56 x 56
-        x = self.maxpool2(x)
+        keys = jrandom.split(key, 16)
+        if state is not sentinel:
+            # N x 3 x 224 x 224
+            x, state = self.conv1(x, state=state, key=keys[0])
+            # N x 64 x 112 x 112
+            x = self.maxpool1(x, key=keys[1])
+            # N x 64 x 56 x 56
+            x, state = self.conv2(x, state=state, key=keys[2])
+            # N x 64 x 56 x 56
+            x, state = self.conv3(x, state=state, key=keys[3])
+            # N x 192 x 56 x 56
+            x = self.maxpool2(x)
 
-        # N x 192 x 28 x 28
-        x = self.inception3a(x, key=keys[4])
-        # N x 256 x 28 x 28
-        x = self.inception3b(x, key=keys[5])
-        # N x 480 x 28 x 28
-        x = self.maxpool3(x)
-        # N x 480 x 14 x 14
-        x = self.inception4a(x, key=keys[6])
-        # N x 512 x 14 x 14
-        if self.aux_logits:
-            aux1 = self.aux1(x, key=keys[7])
+            # N x 192 x 28 x 28
+            x, state = self.inception3a(x, state=state, key=keys[4])
+            # N x 256 x 28 x 28
+            x, state = self.inception3b(x, state=state, key=keys[5])
+            # N x 480 x 28 x 28
+            x = self.maxpool3(x)
+            # N x 480 x 14 x 14
+            x, state = self.inception4a(x, state=state, key=keys[6])
+            # N x 512 x 14 x 14
+            if self.aux_logits:
+                aux1, state = self.aux1(x, state=state, key=keys[7])
 
-        x = self.inception4b(x, key=keys[8])
-        # N x 512 x 14 x 14
-        x = self.inception4c(x, key=keys[9])
-        # N x 512 x 14 x 14
-        x = self.inception4d(x, key=keys[10])
-        # N x 528 x 14 x 14
-        if self.aux_logits:
-            aux2 = self.aux2(x, key=keys[11])  # Key here, a bad thing?
+            x, state = self.inception4b(x, state=state, key=keys[8])
+            # N x 512 x 14 x 14
+            x, state = self.inception4c(x, state=state, key=keys[9])
+            # N x 512 x 14 x 14
+            x, state = self.inception4d(x, state=state, key=keys[10])
+            # N x 528 x 14 x 14
+            if self.aux_logits:
+                aux2, state = self.aux2(x, state=state, key=keys[11])
 
-        x = self.inception4e(x, key=keys[12])
-        # N x 832 x 14 x 14
-        x = self.maxpool4(x)
-        # N x 832 x 7 x 7
-        x = self.inception5a(x, key=keys[13])
-        # N x 832 x 7 x 7
-        x = self.inception5b(x, key=keys[14])
-        # N x 1024 x 7 x 7
+            x, state = self.inception4e(x, state=state, key=keys[12])
+            # N x 832 x 14 x 14
+            x = self.maxpool4(x)
+            # N x 832 x 7 x 7
+            x, state = self.inception5a(x, state=state, key=keys[13])
+            # N x 832 x 7 x 7
+            x, state = self.inception5b(x, state=state, key=keys[14])
+            # N x 1024 x 7 x 7
 
-        x = self.avgpool(x)
-        # N x 1024 x 1 x 1
-        x = jnp.ravel(x)
-        # N x 1024
-        x = self.dropout(x, key=keys[15])
-        x = self.fc(x)
-        # N x 1000 (num_classes)
-        if self.aux_logits:
-            return x, aux2, aux1
+            x = self.avgpool(x)
+            # N x 1024 x 1 x 1
+            x = jnp.ravel(x)
+            # N x 1024
+            x = self.dropout(x, key=keys[15])
+            x = self.fc(x)
+            # N x 1000 (num_classes)
+            if self.aux_logits:
+                return (x, aux2, aux1), state
+            else:
+                return x, state
         else:
-            return x
+            raise ValueError(
+                "GoogLeNet requires state (uses BatchNorm). "
+                "Pass an eqx.nn.State object."
+            )
 
 
-class _Inception(eqx.Module):
+class _Inception(eqx.nn.StatefulLayer):
     branch1: eqx.Module
     branch2: nn.Sequential
     branch3: nn.Sequential
@@ -226,18 +234,26 @@ class _Inception(eqx.Module):
             ]
         )
 
-    def __call__(self, x: Array, *, key: jax.random.PRNGKey = None) -> Array:
+    def __call__(
+        self,
+        x: Array,
+        state: eqx.nn.State = sentinel,
+        *,
+        key: jax.random.PRNGKey = None
+    ):
         keys = jrandom.split(key, 4)
-        branch1 = self.branch1(x, key=keys[0])
-        branch2 = self.branch2(x, key=keys[1])
-        branch3 = self.branch3(x, key=keys[2])
-        branch4 = self.branch4(x, key=keys[3])
+        branch1, state = self.branch1(x, state=state, key=keys[0])
+        branch2, state = self.branch2(x, state=state, key=keys[1])
+        branch3, state = self.branch3(x, state=state, key=keys[2])
+        branch4, state = self.branch4(x, state=state, key=keys[3])
 
         outputs = jnp.concatenate([branch1, branch2, branch3, branch4], axis=0)
-        return outputs
+        if state is sentinel:
+            return outputs
+        return outputs, state
 
 
-class InceptionAux(eqx.Module):
+class InceptionAux(eqx.nn.StatefulLayer):
     conv: eqx.Module
     fc1: nn.Linear
     fc2: nn.Linear
@@ -265,12 +281,18 @@ class InceptionAux(eqx.Module):
             (4, 4),
         )
 
-    def __call__(self, x: Array, *, key: "jax.random.PRNGKey" = None) -> Array:
+    def __call__(
+        self,
+        x: Array,
+        state: eqx.nn.State = sentinel,
+        *,
+        key: "jax.random.PRNGKey" = None
+    ):
         keys = jrandom.split(key, 2)
         # aux1: N x 512 x 14 x 14, aux2: N x 528 x 14 x 14
         x = self.avgpool(x)
         # aux1: N x 512 x 4 x 4, aux2: N x 528 x 4 x 4
-        x = self.conv(x, key=keys[0])
+        x, state = self.conv(x, state=state, key=keys[0])
         # N x 128 x 4 x 4
         x = jnp.ravel(x)
         # N x 2048
@@ -281,10 +303,12 @@ class InceptionAux(eqx.Module):
         x = self.fc2(x)
         # N x 1000 (num_classes)
 
-        return x
+        if state is sentinel:
+            return x
+        return x, state
 
 
-class BasicConv2d(eqx.Module):
+class BasicConv2d(eqx.nn.StatefulLayer):
     conv: nn.Conv2d
     bn: eqx.nn.BatchNorm
 
@@ -303,11 +327,17 @@ class BasicConv2d(eqx.Module):
         self.bn = eqx.nn.BatchNorm(out_channels, axis_name="batch", eps=0.001)
 
     def __call__(
-        self, x: Array, *, key: Optional["jax.random.PRNGKey"] = None
-    ) -> Array:
+        self,
+        x: Array,
+        state: eqx.nn.State = sentinel,
+        *,
+        key: Optional["jax.random.PRNGKey"] = None
+    ):
         x = self.conv(x)
-        x = self.bn(x, key=key)
-        return jnn.relu(x)
+        x, state = self.bn(x, state)
+        if state is sentinel:
+            return jnn.relu(x)
+        return jnn.relu(x), state
 
 
 def googlenet(torch_weights: str = None, **kwargs: Any) -> GoogLeNet:
