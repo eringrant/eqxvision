@@ -35,6 +35,12 @@ test = [
     "optax"
 ]
 
+benchmark = [
+    "pytest",
+    "torch >=1.7.1",
+    "torchvision >=0.8.0",
+]
+
 docs=[
     "jinja2==3.0.3",
     "Markdown>=3.3",
@@ -53,6 +59,12 @@ docs=[
     "mknotebooks==0.7.1",
     "pymdown-extensions==9.4",
     "pytkdocs_tweaks==0.0.5",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (download weights)",
+    "benchmark: benchmark tests against torchvision",
 ]
 
 [project.scripts]
