@@ -1,10 +1,11 @@
-from typing import Any, Callable, Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import equinox as eqx
 import equinox.nn as nn
 import jax
 import jax.nn as jnn
 import jax.random as jr
+from equinox._custom_types import sentinel
 from jaxtyping import Array
 
 from ...experimental import intermediate_layer_getter
@@ -12,7 +13,7 @@ from ...utils import load_torch_weights
 from ..classification.mobilenetv3 import mobilenet_v3_large
 
 
-class LRASPP(eqx.Module):
+class LRASPP(eqx.nn.StatefulLayer):
     """Implements a Lite R-ASPP Network for semantic segmentation from
     ["Searching for MobileNetV3"](https://arxiv.org/abs/1905.02244).
     """
@@ -52,23 +53,34 @@ class LRASPP(eqx.Module):
         )
 
     def __call__(
-        self, x: Array, *, key: Optional["jax.random.PRNGKey"] = None
-    ) -> Tuple[Any, Array]:
+        self,
+        x: Array,
+        state: eqx.nn.State = sentinel,
+        *,
+        key: Optional["jax.random.PRNGKey"] = None,
+    ):
         """**Arguments:**
 
         - `x`: The input. Should be a JAX array with `3` channels
+        - `state`: An `eqx.nn.State` object for batch norm running statistics
         - `key`: Required parameter. Utilised by few layers such as `Dropout` or `DropPath`
 
         **Returns:**
-        A tuple with outputs from the intermediate and last layers.
+        A tuple of ((None, output), state).
         """
-        _, features = self.backbone(x)
-        out = self.classifier(features)
+        if state is not sentinel:
+            (_, features), state = self.backbone(x, state=state)
+            out, state = self.classifier(features, state=state)
+        else:
+            (_, features) = self.backbone(x)
+            out = self.classifier(features)
         out = jax.image.resize(out, out.shape[:-2] + x.shape[-2:], method="bilinear")
-        return None, out
+        if state is not sentinel:
+            return (None, out), state
+        return (None, out)
 
 
-class LRASPPHead(eqx.Module):
+class LRASPPHead(eqx.nn.StatefulLayer):
     cbr: eqx.Module
     scale: eqx.Module
     low_classifier: eqx.Module
@@ -89,7 +101,7 @@ class LRASPPHead(eqx.Module):
                 nn.Conv2d(
                     high_channels, inter_channels, 1, use_bias=False, key=keys[0]
                 ),
-                eqx.experimental.BatchNorm(inter_channels, axis_name="batch"),
+                eqx.nn.BatchNorm(inter_channels, axis_name="batch"),
                 nn.Lambda(jnn.relu),
             ]
         )
@@ -106,17 +118,27 @@ class LRASPPHead(eqx.Module):
         self.high_classifier = nn.Conv2d(inter_channels, num_classes, 1, key=keys[3])
 
     def __call__(
-        self, x: Tuple[Array], *, key: Optional["jax.random.PRNGKey"] = None
-    ) -> Array:
+        self,
+        x: Tuple[Array],
+        state: eqx.nn.State = sentinel,
+        *,
+        key: Optional["jax.random.PRNGKey"] = None,
+    ):
         low = x[0]
         high = x[1]
 
-        x = self.cbr(high)
+        if state is not sentinel:
+            x, state = self.cbr(high, state=state)
+        else:
+            x = self.cbr(high)
         s = self.scale(high)
         x = x * s
         x = jax.image.resize(x, x.shape[:-2] + low.shape[-2:], method="bilinear")
 
-        return self.low_classifier(low) + self.high_classifier(x)
+        result = self.low_classifier(low) + self.high_classifier(x)
+        if state is not sentinel:
+            return result, state
+        return result
 
 
 def lraspp_mobilenet_v3_large(

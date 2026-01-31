@@ -2,6 +2,7 @@ from typing import Any, Callable
 
 import equinox as eqx
 import equinox.nn as nn
+from equinox._custom_types import sentinel
 
 
 class AuxData:
@@ -21,12 +22,21 @@ class AuxData:
 def _make_intermediate_layer_wrapper():
     aux = AuxData()
 
-    class IntermediateWrapper(eqx.Module):
+    class IntermediateWrapper(eqx.nn.StatefulLayer):
         layer: eqx.Module
 
-        def __call__(self, x, *, key=None):
-            out = self.layer(x, key=key)
+        def __call__(self, x, state=sentinel, *, key=None):
+            if (
+                isinstance(self.layer, eqx.nn.StatefulLayer)
+                and self.layer.is_stateful()
+                and state is not sentinel
+            ):
+                out, state = self.layer(x, state=state, key=key)
+            else:
+                out = self.layer(x, key=key)
             aux.update(out)
+            if state is not sentinel:
+                return out, state
             return out
 
     return aux, IntermediateWrapper
@@ -78,11 +88,19 @@ def intermediate_layer_getter(
             ],
         )
 
-    class IntermediateLayerGetter(eqx.Module):
+    class IntermediateLayerGetter(eqx.nn.StatefulLayer):
         model: eqx.Module
 
-        def __call__(self, x, *, key=None):
-            out = self.model(x, key=key)
-            return out, [aux.data for aux in auxs]
+        def __call__(self, x, state=sentinel, *, key=None):
+            if (
+                isinstance(self.model, eqx.nn.StatefulLayer)
+                and self.model.is_stateful()
+                and state is not sentinel
+            ):
+                out, state = self.model(x, state=state, key=key)
+                return (out, [aux.data for aux in auxs]), state
+            else:
+                out = self.model(x, key=key)
+                return out, [aux.data for aux in auxs]
 
     return IntermediateLayerGetter(model)

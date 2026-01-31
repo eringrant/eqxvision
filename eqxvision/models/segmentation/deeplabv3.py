@@ -6,6 +6,7 @@ import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jr
+from equinox._custom_types import sentinel
 from jaxtyping import Array
 
 from ...experimental import intermediate_layer_getter
@@ -28,7 +29,7 @@ class DeepLabHead(nn.Sequential):
             [
                 ASPP(in_channels, [12, 24, 36], key=keys[0]),
                 nn.Conv2d(256, 256, 3, padding=1, use_bias=False, key=keys[1]),
-                eqx.experimental.BatchNorm(256, axis_name="batch"),
+                eqx.nn.BatchNorm(256, axis_name="batch"),
                 nn.Lambda(jnn.relu),
                 nn.Conv2d(256, out_channels, 1, key=keys[2]),
             ]
@@ -49,7 +50,7 @@ class ASPPConv(nn.Sequential):
                 use_bias=False,
                 key=key,
             ),
-            eqx.experimental.BatchNorm(out_channels, axis_name="batch"),
+            eqx.nn.BatchNorm(out_channels, axis_name="batch"),
             nn.Lambda(jnn.relu),
         ]
         super().__init__(modules)
@@ -61,20 +62,31 @@ class ASPPPooling(nn.Sequential):
             [
                 nn.AdaptiveAvgPool2d(1),
                 nn.Conv2d(in_channels, out_channels, 1, use_bias=False, key=key),
-                eqx.experimental.BatchNorm(out_channels, axis_name="batch"),
+                eqx.nn.BatchNorm(out_channels, axis_name="batch"),
                 nn.Lambda(jnn.relu),
             ]
         )
 
     def __call__(
-        self, x: Array, *, key: Optional["jax.random.PRNGKey"] = None
-    ) -> Array:
+        self,
+        x: Array,
+        state: eqx.nn.State = sentinel,
+        *,
+        key: Optional["jax.random.PRNGKey"] = None,
+    ):
         size = x.shape
-        x = super().__call__(x)
-        return jax.image.resize(x, x.shape[:-2] + size[-2:], method="bilinear")
+        if state is not sentinel:
+            x, state = super().__call__(x, state=state)
+            return (
+                jax.image.resize(x, x.shape[:-2] + size[-2:], method="bilinear"),
+                state,
+            )
+        else:
+            x = super().__call__(x)
+            return jax.image.resize(x, x.shape[:-2] + size[-2:], method="bilinear")
 
 
-class ASPP(eqx.Module):
+class ASPP(eqx.nn.StatefulLayer):
     convs: eqx.Module
     project: eqx.Module
 
@@ -97,7 +109,7 @@ class ASPP(eqx.Module):
                     nn.Conv2d(
                         in_channels, out_channels, 1, use_bias=False, key=keys[0]
                     ),
-                    eqx.experimental.BatchNorm(out_channels, axis_name="batch"),
+                    eqx.nn.BatchNorm(out_channels, axis_name="batch"),
                     nn.Lambda(jnn.relu),
                 ]
             )
@@ -119,19 +131,33 @@ class ASPP(eqx.Module):
                     use_bias=False,
                     key=keys[-1],
                 ),
-                eqx.experimental.BatchNorm(out_channels, axis_name="batch"),
+                eqx.nn.BatchNorm(out_channels, axis_name="batch"),
                 nn.Lambda(jnn.relu),
                 nn.Dropout(0.5),
             ]
         )
 
     def __call__(
-        self, x: Array, *, key: Optional["jax.random.PRNGKey"] = None
-    ) -> Array:
+        self,
+        x: Array,
+        state: eqx.nn.State = sentinel,
+        *,
+        key: Optional["jax.random.PRNGKey"] = None,
+    ):
         _res = []
         for conv in self.convs.layers:
-            _res.append(conv(x))
+            if (
+                state is not sentinel
+                and isinstance(conv, eqx.nn.StatefulLayer)
+                and conv.is_stateful()
+            ):
+                out, state = conv(x, state=state)
+            else:
+                out = conv(x)
+            _res.append(out)
         x = jnp.concatenate(_res, axis=0)
+        if state is not sentinel:
+            return self.project(x, state=state, key=key)
         return self.project(x, key=key)
 
 
