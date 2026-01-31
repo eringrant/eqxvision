@@ -249,18 +249,18 @@ def _maybe_xfail(spec: ModelSpec):
         pytest.xfail(spec.xfail)
 
 
-@pytest.fixture(scope="session")
-def random_input():
-    np_img = np.random.RandomState(42).randn(3, 224, 224).astype(np.float32)
-    jax_input = jnp.array(np_img)
-    torch_input = torch.from_numpy(np_img.copy()).unsqueeze(0)
+def _make_inputs(demo_image):
+    """Convert the shared test image into JAX and torch tensors."""
+    jax_batched = demo_image(224)  # (1, 3, 224, 224) JAX array
+    jax_input = jax_batched.squeeze(0)  # (3, 224, 224)
+    torch_input = torch.from_numpy(np.array(jax_batched))  # (1, 3, 224, 224)
     return jax_input, torch_input
 
 
 @pytest.mark.parametrize("spec", MODEL_SPECS, ids=lambda s: s.name)
-def test_output_match(spec, random_input):
+def test_output_match(spec, demo_image):
     _maybe_xfail(spec)
-    jax_input, torch_input = random_input
+    jax_input, torch_input = _make_inputs(demo_image)
 
     eqx_model = _load_eqx_model(spec)
     tv_model = _load_tv_model(spec)
@@ -274,9 +274,9 @@ def test_output_match(spec, random_input):
 
 
 @pytest.mark.parametrize("spec", MODEL_SPECS, ids=lambda s: s.name)
-def test_gradient_match(spec, random_input):
+def test_gradient_match(spec, demo_image):
     _maybe_xfail(spec)
-    jax_input, torch_input_orig = random_input
+    jax_input, torch_input_orig = _make_inputs(demo_image)
     torch_input = torch_input_orig.clone().requires_grad_(True)
 
     eqx_model = _load_eqx_model(spec)
