@@ -40,7 +40,7 @@ class ConvNormActivation(nn.Sequential):
             in which case it will calculated as ``padding = (kernel_size - 1) // 2 * dilation``
         - `groups`: Number of blocked connections from input channels to output channels. Defaults to `1`
         - `norm_layer`: Norm layer that will be stacked on top of the convolution layer. If ``None``
-            this layer wont be used. Defaults to ``eqx.experimental.BatchNorm``
+            this layer wont be used. Defaults to ``eqx.nn.BatchNorm``
         - `activation_layer`: Activation function which will be stacked on top of the normalization layer
             (if not None), otherwise on top of the conv layer
             If ``None`` this layer wont be used. Defaults to ``jax.nn.relu``
@@ -72,9 +72,9 @@ class ConvNormActivation(nn.Sequential):
         ]
         if norm_layer is not None:
             is_bn = (
-                norm_layer.func == eqxex.BatchNorm
+                norm_layer.func == eqx.nn.BatchNorm
                 if isinstance(norm_layer, partial)
-                else norm_layer == eqxex.BatchNorm
+                else norm_layer == eqx.nn.BatchNorm
             )
             if is_bn:
                 layers.append(norm_layer(out_channels, axis_name="batch"))
