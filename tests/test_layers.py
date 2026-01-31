@@ -82,11 +82,16 @@ def test_squeeze_excitation(getkey):
 
 def test_conv_norm_activation(getkey):
     @eqx.filter_jit
-    def forward(net, xs, keys):
-        return jax.vmap(net, axis_name="batch")(xs, key=keys)
+    def forward(net, state, xs, keys):
+        def fn(x, state, key):
+            return net(x, state, key=key)
 
-    se = layers.ConvNormActivation(3, 4, key=getkey())
+        return jax.vmap(
+            fn, axis_name="batch", in_axes=(0, None, 0), out_axes=(0, None)
+        )(xs, state, keys)
+
+    net, state = eqx.nn.make_with_state(layers.ConvNormActivation)(3, 4, key=getkey())
     x = jrandom.uniform(getkey(), (1, 3, 5, 5), minval=1, maxval=10)
-    output = forward(se, x, jrandom.split(getkey(), 1))
+    output, state = forward(net, state, x, jrandom.split(getkey(), 1))
     assert output.shape == (1, 4, 5, 5)
     assert (output >= 0).all()

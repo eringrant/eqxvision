@@ -20,13 +20,19 @@ class TestEfficientNet:
         keys = jax.random.split(getkey(), 1)
 
         @eqx.filter_jit
-        def forward(net, imgs, keys):
-            outputs = jax.vmap(net, axis_name="batch")(imgs, key=keys)
+        def forward(net, state, imgs, keys):
+            def fn(x, state, key):
+                return net(x, state, key=key)
+
+            outputs, state = jax.vmap(
+                fn, axis_name="batch", in_axes=(0, None, 0), out_axes=(0, None)
+            )(imgs, state, keys)
             return outputs
 
         model = model_func[1](torch_weights=CLASSIFICATION_URLS[model_func[0]])
         model = eqx.tree_inference(model, True)
-        eqx_outputs = forward(model, img, keys)
+        state = eqx.nn.State(model)
+        eqx_outputs = forward(model, state, img, keys)
         pt_outputs = net_preds[model_func[0]]
 
         assert jnp.argmax(eqx_outputs) == jnp.argmax(pt_outputs)

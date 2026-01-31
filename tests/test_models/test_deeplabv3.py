@@ -8,8 +8,13 @@ from eqxvision.utils import SEGMENTATION_URLS
 
 
 @eqx.filter_jit
-def forward(model, x, key):
-    aux, clf = jax.vmap(model, axis_name="batch")(x, key=key)
+def forward(model, state, x, key):
+    def fn(x_, state_, key_):
+        return model(x_, state_, key=key_)
+
+    (aux, clf), state = jax.vmap(
+        fn, axis_name="batch", in_axes=(0, None, 0), out_axes=((0, 0), None)
+    )(x, state, key)
     return aux, clf
 
 
@@ -21,7 +26,8 @@ def test_deeplabv3(demo_image, net_preds):
         torch_weights=SEGMENTATION_URLS["deeplabv3_resnet50"],
     )
     net = eqx.tree_inference(net, True)
-    aux, out = forward(net, img, key=jr.split(jr.PRNGKey(0), 1))
+    state = eqx.nn.State(net)
+    aux, out = forward(net, state, img, key=jr.split(jr.PRNGKey(0), 1))
 
     pt_outputs = net_preds["deeplabv3_resnet50"]
     assert jnp.isclose(out, pt_outputs, atol=1e-4).all()

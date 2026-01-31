@@ -20,13 +20,19 @@ class TestVGG:
         keys = jax.random.split(getkey(), 1)
 
         @eqx.filter_jit
-        def forward(net, imgs, keys):
-            outputs = jax.vmap(net, axis_name="batch")(imgs, key=keys)
+        def forward(net, state, imgs, keys):
+            def fn(x, state, key):
+                return net(x, state, key=key)
+
+            outputs, state = jax.vmap(
+                fn, axis_name="batch", in_axes=(0, None, 0), out_axes=(0, None)
+            )(imgs, state, keys)
             return outputs
 
         model = model_func[1](torch_weights=CLASSIFICATION_URLS[model_func[0]])
         model = eqx.tree_inference(model, True)
+        state = eqx.nn.State(model)
         pt_outputs = net_preds[model_func[0]]
-        eqx_outputs = forward(model.features, img, keys)
+        eqx_outputs = forward(model, state, img, keys)
 
         assert jnp.isclose(eqx_outputs, pt_outputs, atol=1e-4).all()

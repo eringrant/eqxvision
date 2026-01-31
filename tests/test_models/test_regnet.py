@@ -12,15 +12,21 @@ class TestRegNet:
         keys = jax.random.split(getkey(), 1)
 
         @eqx.filter_jit
-        def forward(net, imgs, keys):
-            outputs = jax.vmap(net, axis_name="batch")(imgs, key=keys)
+        def forward(net, state, imgs, keys):
+            def fn(x, state, key):
+                return net(x, state, key=key)
+
+            outputs, state = jax.vmap(
+                fn, axis_name="batch", in_axes=(0, None, 0), out_axes=(0, None)
+            )(imgs, state, keys)
             return outputs
 
         model = models.regnet_x_400mf(
             torch_weights=CLASSIFICATION_URLS["regnet_x_400mf"]
         )
         model = eqx.tree_inference(model, True)
-        eqx_outputs = forward(model, img, keys)
+        state = eqx.nn.State(model)
+        eqx_outputs = forward(model, state, img, keys)
         pt_outputs = net_preds["regnet_x_400mf"]
 
         assert jnp.isclose(eqx_outputs, pt_outputs, atol=1e-4).all()
