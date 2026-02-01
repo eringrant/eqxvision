@@ -97,6 +97,7 @@ class VGG(eqx.Module):
         self.classifier = nn.Sequential(
             [
                 nn.Linear(512 * 7 * 7, 4096, key=keys[1]),
+                nn.Lambda(jnn.relu),
                 nn.Dropout(p=dropout),
                 nn.Linear(4096, 4096, key=keys[2]),
                 nn.Lambda(jnn.relu),
