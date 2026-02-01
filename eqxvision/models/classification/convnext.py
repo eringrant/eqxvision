@@ -23,13 +23,13 @@ class CNBlock(eqx.Module):
         dim,
         layer_scale: float,
         stochastic_depth_prob: float,
-        norm_layer: Optional[Callable[..., eqx.Module]] = LayerNorm2d,
+        norm_layer: Optional[Callable[..., eqx.Module]] = None,
         *,
         key=None,
     ) -> None:
         super().__init__()
         if norm_layer is None:
-            norm_layer = partial(nn.LayerNorm, eps=1e-6)
+            norm_layer = partial(LayerNorm2d, eps=1e-6)
 
         keys = jrandom.split(key, 4)
         self.block = nn.Sequential(
@@ -172,7 +172,13 @@ class ConvNeXt(eqx.Module):
                     stochastic_depth_prob * stage_block_id / (total_stage_blocks - 1.0)
                 )
                 stage.append(
-                    block(cnf.input_channels, layer_scale, sd_prob, key=keys[0])
+                    block(
+                        cnf.input_channels,
+                        layer_scale,
+                        sd_prob,
+                        norm_layer=norm_layer,
+                        key=keys[0],
+                    )
                 )
                 stage_block_id += 1
             layers.append(nn.Sequential(stage))
