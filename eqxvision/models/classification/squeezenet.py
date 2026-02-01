@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import Array
 
-from ...utils import load_torch_weights
+from ...flexible_weight_loader import flexible_load_torch_weights
 
 
 class _Fire(eqx.Module):
@@ -142,7 +142,7 @@ class SqueezeNet(eqx.Module):
 def _squeezenet(version: str, torch_weights: str, **kwargs: Any) -> SqueezeNet:
     model = SqueezeNet(version, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 

@@ -10,8 +10,9 @@ import jax.random as jr
 from equinox._custom_types import sentinel
 from jaxtyping import Array
 
+from ...flexible_weight_loader import flexible_load_torch_weights
 from ...layers import ConvNormActivation, SqueezeExcitation
-from ...utils import _make_divisible, load_torch_weights
+from ...utils import _make_divisible
 
 
 class SimpleStemIN(ConvNormActivation):
@@ -465,7 +466,7 @@ def _regnet(
     )
     model = RegNet(block_params, norm_layer=norm_layer, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 

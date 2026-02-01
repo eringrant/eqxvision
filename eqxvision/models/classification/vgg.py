@@ -9,7 +9,7 @@ import jax.random as jrandom
 from equinox._custom_types import sentinel
 from jaxtyping import Array
 
-from ...utils import load_torch_weights
+from ...flexible_weight_loader import flexible_load_torch_weights
 
 
 _cfgs: Dict[str, List[Union[str, int]]] = {
@@ -179,7 +179,7 @@ def vgg11(torch_weights: str = None, **kwargs: Any) -> VGG:
     """
     model = _vgg("A", False, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -194,7 +194,7 @@ def vgg11_bn(torch_weights: str = None, **kwargs: Any) -> VGG:
     """
     model = _vgg("A", True, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -209,7 +209,7 @@ def vgg13(torch_weights: str = None, **kwargs: Any) -> VGG:
     """
     model = _vgg("B", False, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -224,7 +224,7 @@ def vgg13_bn(torch_weights: str = None, **kwargs: Any) -> VGG:
     """
     model = _vgg("B", True, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -239,7 +239,7 @@ def vgg16(torch_weights: str = None, **kwargs: Any) -> VGG:
     """
     model = _vgg("D", False, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -254,7 +254,7 @@ def vgg16_bn(torch_weights: str = None, **kwargs: Any) -> VGG:
     """
     model = _vgg("D", True, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -269,7 +269,7 @@ def vgg19(torch_weights: str = None, **kwargs: Any) -> VGG:
     """
     model = _vgg("E", False, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -284,5 +284,5 @@ def vgg19_bn(torch_weights: str = None, **kwargs: Any) -> VGG:
     """
     model = _vgg("E", True, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model

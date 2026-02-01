@@ -13,8 +13,9 @@ import jax.random as jr
 from equinox._custom_types import sentinel
 from jaxtyping import Array
 
+from ...flexible_weight_loader import flexible_load_torch_weights
 from ...layers import ConvNormActivation, DropPath, SqueezeExcitation
-from ...utils import _make_divisible, load_torch_weights
+from ...utils import _make_divisible
 
 
 @dataclass
@@ -438,7 +439,7 @@ def _efficientnet(
         inverted_residual_setting, dropout, last_channel=last_channel, **kwargs
     )
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
 
     return model
 

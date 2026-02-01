@@ -8,8 +8,9 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from equinox._custom_types import sentinel
 
+from ...flexible_weight_loader import flexible_load_torch_weights
 from ...layers import ConvNormActivation
-from ...utils import _make_divisible, load_torch_weights
+from ...utils import _make_divisible
 
 
 class _InvertedResidual(eqx.nn.StatefulLayer):
@@ -259,5 +260,5 @@ def mobilenet_v2(torch_weights: str = None, **kwargs: Any) -> MobileNetV2:
     """
     model = MobileNetV2(**kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model

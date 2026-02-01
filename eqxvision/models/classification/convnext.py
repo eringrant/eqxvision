@@ -9,8 +9,9 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import Array
 
+from ...flexible_weight_loader import flexible_load_torch_weights
 from ...layers import ConvNormActivation, DropPath, LayerNorm2d, Linear2d
-from ...utils import CLASSIFICATION_URLS, load_torch_weights
+from ...utils import CLASSIFICATION_URLS
 
 
 class CNBlock(eqx.Module):
@@ -240,7 +241,9 @@ def _convnext(
     if torch_weights:
         if arch not in CLASSIFICATION_URLS:
             raise ValueError(f"No checkpoint is available for model type {arch}")
-        model = load_torch_weights(model, torch_weights=CLASSIFICATION_URLS[arch])
+        model = flexible_load_torch_weights(
+            model, torch_weights=CLASSIFICATION_URLS[arch]
+        )
     return model
 
 

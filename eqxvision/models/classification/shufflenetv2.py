@@ -9,7 +9,7 @@ import jax.random as jrandom
 from equinox._custom_types import sentinel
 from jaxtyping import Array
 
-from ...utils import load_torch_weights
+from ...flexible_weight_loader import flexible_load_torch_weights
 
 
 def _channel_shuffle(x: Array, groups: int) -> Array:
@@ -298,7 +298,7 @@ def shufflenet_v2_x0_5(torch_weights: str = None, **kwargs: Any) -> ShuffleNetV2
     """
     model = _shufflenetv2([4, 8, 4], [24, 48, 96, 192, 1024], **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -314,7 +314,7 @@ def shufflenet_v2_x1_0(torch_weights: str = None, **kwargs: Any) -> ShuffleNetV2
     """
     model = _shufflenetv2([4, 8, 4], [24, 116, 232, 464, 1024], **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -330,7 +330,7 @@ def shufflenet_v2_x1_5(torch_weights: str = None, **kwargs: Any) -> ShuffleNetV2
     """
     model = _shufflenetv2([4, 8, 4], [24, 176, 352, 704, 1024], **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -346,5 +346,5 @@ def shufflenet_v2_x2_0(torch_weights: str = None, **kwargs: Any) -> ShuffleNetV2
     """
     model = _shufflenetv2([4, 8, 4], [24, 244, 488, 976, 2048], **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model

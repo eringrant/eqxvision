@@ -10,7 +10,7 @@ import jax.random as jrandom
 from equinox._custom_types import sentinel
 from jaxtyping import Array
 
-from ...utils import load_torch_weights
+from ...flexible_weight_loader import flexible_load_torch_weights
 
 
 class GoogLeNet(eqx.nn.StatefulLayer):
@@ -353,7 +353,7 @@ def googlenet(torch_weights: str = None, **kwargs: Any) -> GoogLeNet:
     if torch_weights:
         use_aux = kwargs.get("aux_logits", False)
         model = GoogLeNet(aux_logits=True, **kwargs)
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
         if not use_aux:
             model = eqx.tree_at(lambda m: m.aux_logits, model, replace=(False))
         else:

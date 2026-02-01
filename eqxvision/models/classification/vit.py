@@ -8,8 +8,8 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import Array
 
+from ...flexible_weight_loader import flexible_load_torch_weights
 from ...layers import DropPath, MlpProjection, PatchEmbed
-from ...utils import load_torch_weights
 
 
 class _VitAttention(eqx.Module):
@@ -325,7 +325,7 @@ def vit_tiny(
         **kwargs,
     )
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -363,7 +363,7 @@ def vit_small(
     )
 
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -400,5 +400,5 @@ def vit_base(
         **kwargs,
     )
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model

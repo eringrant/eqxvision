@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from jaxtyping import Array
 
-from ...utils import load_torch_weights
+from ...flexible_weight_loader import flexible_load_torch_weights
 
 
 class AlexNet(eqx.Module):
@@ -99,5 +99,5 @@ def alexnet(torch_weights: str = None, **kwargs: Any) -> AlexNet:
     """
     model = AlexNet(**kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model

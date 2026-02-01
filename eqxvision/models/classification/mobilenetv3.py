@@ -9,9 +9,10 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from equinox._custom_types import sentinel
 
+from ...flexible_weight_loader import flexible_load_torch_weights
 from ...layers import ConvNormActivation
 from ...layers import SqueezeExcitation as SElayer
-from ...utils import _make_divisible, load_torch_weights
+from ...utils import _make_divisible
 
 
 class _InvertedResidualConfig:
@@ -378,7 +379,7 @@ def mobilenet_v3_large(torch_weights: str = None, **kwargs: Any) -> MobileNetV3:
     )
     model = _mobilenet_v3(arch, inverted_residual_setting, last_channel, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -396,5 +397,5 @@ def mobilenet_v3_small(torch_weights: str = None, **kwargs: Any) -> MobileNetV3:
     inverted_residual_setting, last_channel = _mobilenet_v3_conf(arch, **kwargs)
     model = _mobilenet_v3(arch, inverted_residual_setting, last_channel, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model

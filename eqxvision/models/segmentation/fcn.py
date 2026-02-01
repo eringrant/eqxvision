@@ -7,7 +7,7 @@ import jax.nn as jnn
 import jax.random as jr
 
 from ...experimental import intermediate_layer_getter
-from ...utils import load_torch_weights
+from ...flexible_weight_loader import flexible_load_torch_weights
 from ..classification import resnet
 from ._utils import _SimpleSegmentationModel
 
@@ -115,6 +115,6 @@ def fcn(
     model = FCN(backbone, classifier, aux_classifier)
 
     if torch_weights:
-        return load_torch_weights(model, torch_weights=torch_weights)
+        return flexible_load_torch_weights(model, torch_weights=torch_weights)
 
     return model

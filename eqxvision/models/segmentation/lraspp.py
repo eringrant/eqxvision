@@ -9,7 +9,7 @@ from equinox._custom_types import sentinel
 from jaxtyping import Array
 
 from ...experimental import intermediate_layer_getter
-from ...utils import load_torch_weights
+from ...flexible_weight_loader import flexible_load_torch_weights
 from ..classification.mobilenetv3 import mobilenet_v3_large
 
 
@@ -192,6 +192,6 @@ def lraspp_mobilenet_v3_large(
         backbone, num_channels[0], num_channels[1], num_classes=num_classes, key=key
     )
     if torch_weights:
-        return load_torch_weights(model, torch_weights)
+        return flexible_load_torch_weights(model, torch_weights)
 
     return model

@@ -10,8 +10,8 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array
 
+from ...flexible_weight_loader import flexible_load_torch_weights
 from ...layers import DropPath, LayerNorm2d, Linear2d, MlpProjection
-from ...utils import load_torch_weights
 
 
 def _func_dropout(x, p, key):
@@ -799,7 +799,7 @@ def _swin_transformer(
         **kwargs,
     )
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 

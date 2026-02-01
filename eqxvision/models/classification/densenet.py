@@ -9,7 +9,7 @@ import jax.random as jrandom
 from equinox._custom_types import sentinel
 from jaxtyping import Array
 
-from ...utils import load_torch_weights
+from ...flexible_weight_loader import flexible_load_torch_weights
 
 
 class _DenseLayer(eqx.nn.StatefulLayer):
@@ -279,7 +279,7 @@ def densenet121(torch_weights: str = None, **kwargs: Any) -> DenseNet:
     """
     model = _densenet(32, (6, 12, 24, 16), 64, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -296,7 +296,7 @@ def densenet161(torch_weights: str = None, **kwargs: Any) -> DenseNet:
     """
     model = _densenet(48, (6, 12, 36, 24), 96, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -312,7 +312,7 @@ def densenet169(torch_weights: str = None, **kwargs: Any) -> DenseNet:
     """
     model = _densenet(32, (6, 12, 32, 32), 64, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
 
 
@@ -328,5 +328,5 @@ def densenet201(torch_weights: str = None, **kwargs: Any) -> DenseNet:
     """
     model = _densenet(32, (6, 12, 48, 32), 64, **kwargs)
     if torch_weights:
-        model = load_torch_weights(model, torch_weights=torch_weights)
+        model = flexible_load_torch_weights(model, torch_weights=torch_weights)
     return model
