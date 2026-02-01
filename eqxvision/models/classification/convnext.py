@@ -53,9 +53,7 @@ class CNBlock(eqx.Module):
                 ),
             ]
         )
-        self.layer_scale = jnp.asarray(
-            jnp.ones(shape=(dim, 1, 1)) * layer_scale, dtype=jnp.float32
-        )
+        self.layer_scale = jnp.ones(shape=(dim, 1, 1)) * layer_scale
         self.stochastic_depth = DropPath(p=stochastic_depth_prob, mode="local")
 
     def __call__(self, x: Array, *, key: "jax.random.PRNGKey") -> Array:
