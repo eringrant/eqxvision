@@ -35,7 +35,7 @@ class AlexNet(eqx.Module):
 
         """
         super().__init__()
-        if not key:
+        if key is None:
             key = jrandom.PRNGKey(0)
         keys = jrandom.split(key, 8)
 
