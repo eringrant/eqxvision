@@ -51,7 +51,7 @@ class _InvertedResidual(eqx.Module):
                     hidden_dim,
                     kernel_size=1,
                     norm_layer=norm_layer,
-                    activation_layer=jnn.relu,
+                    activation_layer=jnn.relu6,
                     key=keys[0],
                 )
             )
@@ -64,7 +64,7 @@ class _InvertedResidual(eqx.Module):
                     stride=stride,
                     groups=hidden_dim,
                     norm_layer=norm_layer,
-                    activation_layer=jnn.relu,
+                    activation_layer=jnn.relu6,
                     key=keys[1],
                 ),
                 # pw-linear
@@ -168,7 +168,7 @@ class MobileNetV2(eqx.Module):
                 input_channel,
                 stride=2,
                 norm_layer=norm_layer,
-                activation_layer=jnn.relu,
+                activation_layer=jnn.relu6,
                 key=keys[0],
             )
         ]
@@ -197,7 +197,7 @@ class MobileNetV2(eqx.Module):
                 last_channel,
                 kernel_size=1,
                 norm_layer=norm_layer,
-                activation_layer=jnn.relu,
+                activation_layer=jnn.relu6,
                 key=keys[0],
             )
         )
