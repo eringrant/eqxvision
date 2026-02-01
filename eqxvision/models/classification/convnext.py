@@ -47,7 +47,7 @@ class CNBlock(eqx.Module):
                 Linear2d(
                     in_features=dim, out_features=4 * dim, use_bias=True, key=keys[1]
                 ),
-                nn.Lambda(jnn.gelu),
+                nn.Lambda(partial(jnn.gelu, approximate=False)),
                 Linear2d(
                     in_features=4 * dim, out_features=dim, use_bias=True, key=keys[2]
                 ),
