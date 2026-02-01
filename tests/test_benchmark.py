@@ -2,13 +2,21 @@
 
 Tests that `eqxvision` models produce identical outputs and gradients to their
 `torchvision` counterparts when loaded with the same pretrained weights.
+
+All tests run in float64 to eliminate float32 rounding differences between
+JAX/XLA and PyTorch/ATEN backends, which compound through deep networks.
 """
 
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-import equinox as eqx
 import jax
+
+
+jax.config.update("jax_enable_x64", True)
+
+import equinox as eqx
+import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 import pytest
@@ -52,7 +60,6 @@ class ModelSpec:
     input_size: tuple = (3, 224, 224)
     eqx_kwargs: dict = field(default_factory=dict)
     tv_kwargs: dict = field(default_factory=dict)
-    xfail: str | None = None
 
 
 MODEL_SPECS = [
@@ -134,7 +141,6 @@ MODEL_SPECS = [
         eqx_factory=convnext_tiny,
         tv_factory=tv_models.convnext_tiny,
         tv_weights=tv_models.ConvNeXt_Tiny_Weights.DEFAULT,
-        xfail="numerical precision in LayerNorm2d/Linear2d (~0.026 max diff)",
     ),
     ModelSpec(
         name="alexnet",
@@ -185,6 +191,17 @@ MODEL_SPECS = [
 ]
 
 
+def _to_f64_jax(pytree):
+    """Cast all floating-point JAX arrays in a pytree to float64."""
+
+    def _cast(x):
+        if isinstance(x, jnp.ndarray) and jnp.issubdtype(x.dtype, jnp.floating):
+            return x.astype(jnp.float64)
+        return x
+
+    return jax.tree.map(_cast, pytree)
+
+
 def _get_tv_weights_url(spec: ModelSpec) -> str:
     return spec.tv_weights.url
 
@@ -194,15 +211,16 @@ def _is_stateful(model) -> bool:
 
 
 def _load_eqx_model(spec: ModelSpec):
-    """Load eqxvision model using torchvision weights URL."""
+    """Load eqxvision model using torchvision weights URL, cast to float64."""
     url = _get_tv_weights_url(spec)
     model = spec.eqx_factory(torch_weights=url, **spec.eqx_kwargs)
     model = eqx.nn.inference_mode(model)
+    model = _to_f64_jax(model)
     return model
 
 
 def _load_tv_model(spec: ModelSpec):
-    return spec.tv_factory(weights=spec.tv_weights, **spec.tv_kwargs).eval()
+    return spec.tv_factory(weights=spec.tv_weights, **spec.tv_kwargs).eval().double()
 
 
 def _run_eqx_model(spec: ModelSpec, eqx_model, jax_input):
@@ -225,22 +243,18 @@ def _run_tv_model(spec: ModelSpec, tv_model, torch_input):
     return tv_out.squeeze(0).detach().numpy()
 
 
-def _maybe_xfail(spec: ModelSpec):
-    if spec.xfail is not None:
-        pytest.xfail(spec.xfail)
-
 
 def _make_inputs(demo_image):
-    """Convert the shared test image into JAX and torch tensors."""
+    """Convert the shared test image into float64 JAX and torch tensors."""
     jax_batched = demo_image(224)  # (1, 3, 224, 224) JAX array
-    jax_input = jax_batched.squeeze(0)  # (3, 224, 224)
-    torch_input = torch.from_numpy(np.array(jax_batched))  # (1, 3, 224, 224)
+    jax_input = jax_batched.squeeze(0).astype(jnp.float64)  # (3, 224, 224)
+    torch_input = torch.from_numpy(np.array(jax_input, dtype=np.float64)).unsqueeze(0)
     return jax_input, torch_input
 
 
 @pytest.mark.parametrize("spec", MODEL_SPECS, ids=lambda s: s.name)
 def test_output_match(spec, demo_image):
-    _maybe_xfail(spec)
+
     jax_input, torch_input = _make_inputs(demo_image)
 
     eqx_model = _load_eqx_model(spec)
@@ -256,7 +270,7 @@ def test_output_match(spec, demo_image):
 
 @pytest.mark.parametrize("spec", MODEL_SPECS, ids=lambda s: s.name)
 def test_gradient_match(spec, demo_image):
-    _maybe_xfail(spec)
+
     jax_input, torch_input_orig = _make_inputs(demo_image)
     torch_input = torch_input_orig.clone().requires_grad_(True)
 
@@ -278,4 +292,4 @@ def test_gradient_match(spec, demo_image):
 
     eqx_grad = jax.grad(forward)(jax_input)
 
-    np.testing.assert_allclose(np.array(eqx_grad), tv_grad, atol=1e-3, rtol=1e-3)
+    np.testing.assert_allclose(np.array(eqx_grad), tv_grad, atol=1e-4, rtol=1e-4)
